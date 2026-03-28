@@ -65,11 +65,12 @@
   We aggregate all GPUs belonging to each LLM pod using a PromQL sum:
 </p>
 <pre><code>sum by (namespace, container, Hostname) (
-  DCGM_FI_DEV_POWER_USAGE{namespace=~"nrp-llm|sdsc-llm"}
+  avg_over_time(DCGM_FI_DEV_POWER_USAGE{namespace=~"nrp-llm|sdsc-llm"}[5m])
 )</code></pre>
 <p>
-  This gives total instantaneous GPU power in <strong>watts</strong> for each deployed model.
-  Measurements are scraped every 30 seconds and averaged over the display window.
+  The <code>avg_over_time(...[5m])</code> wrapper smooths short-lived spikes into a 5-minute
+  rolling average. This gives total GPU power in <strong>watts</strong> for each deployed model.
+  Measurements are scraped every 30 seconds.
 </p>
 <div class="callout">
   <p><strong>Limitation:</strong> We measure <em>GPU power only</em>. CPU, RAM, storage, and
@@ -89,7 +90,9 @@
 )</code></pre>
 <p>
   This enables the <strong>CO₂ per token</strong> metric, which is only reported when the
-  model is actively generating (rate &gt; 0.1 tok/s).
+  model is actively generating at meaningful throughput (&ge; 5 tok/s). Below this
+  threshold the ratio is dominated by near-idle power draw rather than the model's
+  efficiency under real load.
 </p>
 
 <h2>Step 3 — Carbon Intensity by Grid Location</h2>
@@ -97,13 +100,16 @@
   NRP nodes are hosted at universities and research institutions across the United States
   and internationally. Grid carbon intensity varies substantially by location. We use
   <a href="https://www.epa.gov/egrid" target="_blank">EPA eGRID 2022 subregion averages</a>
-  matched to each node's hostname:
+  matched to each node's <code>Hostname</code> label. When the hostname doesn't match,
+  a secondary lookup by Kubernetes namespace prefix is attempted (e.g. <code>sdsc-llm</code>
+  maps to California). If neither matches, the fallback is the California CAMX intensity
+  (0.198 kg CO₂/kWh), since the majority of NRP Nautilus nodes are hosted at SDSC in
+  San Diego:
 </p>
 
 <table>
   <tr><th>Institution / Region</th><th>Hostname pattern</th><th>eGRID Subregion</th><th>Intensity (kg CO₂/kWh)</th></tr>
-  <tr><td>SDSC, CSUS, Caltech, Humboldt (California)</td><td><code>*.sdsc.*</code>, <code>*.csus.*</code>, <code>*.humboldt.*</code></td><td>CAMX</td><td>0.198</td></tr>
-  <tr><td>Cal State Monterey Bay</td><td><code>*.csumb.*</code></td><td>CAMX</td><td>0.198</td></tr>
+  <tr><td>California (SDSC, CSUS, Caltech, Humboldt, UCSD, UCLA, UCSB, CalIT2, CSUMB)</td><td><code>*.sdsc.*</code>, <code>*.csus.*</code>, <code>*.humboldt.*</code>, <code>*.caltech.*</code>, <code>*.ucsd.*</code>, <code>*.ucla.*</code>, <code>*.ucsb.*</code>, <code>*.calit2.*</code>, <code>csumb.*</code>, <code>nautilus-*</code>, <code>sdsc-*</code></td><td>CAMX</td><td>0.198</td></tr>
   <tr><td>NYU (New York)</td><td><code>*.nyu.*</code></td><td>NYUP</td><td>0.174</td></tr>
   <tr><td>UNL (Nebraska)</td><td><code>*.unl.*</code></td><td>MROW</td><td>0.531</td></tr>
   <tr><td>UT Austin / TACC (Texas)</td><td><code>*.utexas.*</code>, <code>*.tacc.*</code></td><td>ERCO</td><td>0.393</td></tr>
@@ -111,7 +117,7 @@
   <tr><td>University of Hawaii</td><td><code>*.hawaii.*</code></td><td>HIOA</td><td>0.702</td></tr>
   <tr><td>K-State (Kansas)</td><td><code>*.ksu.*</code></td><td>SPSO</td><td>0.555</td></tr>
   <tr><td>KREONET (South Korea)</td><td><code>*.kreonet.*</code></td><td>Korean grid</td><td>0.459</td></tr>
-  <tr><td><em>All other nodes</em></td><td>—</td><td>US national average</td><td>0.386</td></tr>
+  <tr><td><em>All other nodes</em></td><td>—</td><td>CAMX (California default)</td><td>0.198</td></tr>
 </table>
 
 <h2>Step 4 — Carbon Calculations</h2>
@@ -127,7 +133,8 @@
 
 <h3>Cumulative CO₂ (time-series view)</h3>
 <p>
-  For the weekly/monthly charts, we query the Prometheus range API at hourly resolution,
+  For the time-series charts, we query the Prometheus range API at adaptive resolution
+  (5-minute steps for 24 h, hourly for 7 d, 6-hourly for 30 d),
   apply the same per-node intensity to each sample, and integrate:
 </p>
 <pre><code>CO₂_kg_cumulative = Σ (P_watts_i × intensity_i × Δt_hrs / 1000)</code></pre>
@@ -137,8 +144,8 @@
   <li>CPU, DRAM, and network power are excluded (typically adds 15–30% to total)</li>
   <li>Datacenter PUE (Power Usage Effectiveness) is not applied (adds 10–50%)</li>
   <li>Carbon intensity values are annual averages; real-time grid mix varies hour-to-hour</li>
-  <li>Nodes not matching hostname patterns fall back to the US national average</li>
-  <li>The LBL eGRID intensity table will be updated as new annual data is published</li>
+  <li>Nodes not matching hostname or namespace patterns fall back to the California (CAMX) average</li>
+  <li>The eGRID intensity table in <code>internal/carbon/intensity.go</code> will be updated as new annual data is published</li>
 </ul>
 <p>
   For a more complete lifecycle analysis including training, hardware manufacturing, and
@@ -187,8 +194,8 @@
 <h2>Source Code</h2>
 <p>
   This dashboard is open source:
-  <a href="https://github.com/boettiger-lab/nautilus" target="_blank">github.com/boettiger-lab/nautilus</a>
-  (carbon-api directory). The carbon intensity lookup table is in
+  <a href="https://github.com/boettiger-lab/nrp-carbon-api" target="_blank">github.com/boettiger-lab/nrp-carbon-api</a>.
+  The carbon intensity lookup table is in
   <code>internal/carbon/intensity.go</code>.
 </p>
 
