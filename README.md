@@ -5,6 +5,10 @@ on the [National Research Platform (NRP) Nautilus](https://nrp.ai) Kubernetes cl
 
 **Live dashboard:** <https://carbon-api.nrp-nautilus.io>
 
+## Credits
+
+This project is based upon the original [NRP LLM Dashboard](https://nrp.ai/llm-status/) from [@ZihaoZhou], source repository: https://github.com/ZihaoZhou/nautilus-llm-status.
+
 ## How it works
 
 1. **GPU power** is read from [NVIDIA DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)
@@ -45,10 +49,7 @@ kubectl -n biodiversity rollout restart deployment/carbon-api
 | `GET /api/v1/carbon/{ns}/{container}/{metric}?range=...` | Per-model time series (`power_watts`, `co2_grams_per_hour`, `co2_mg_per_token`) |
 | `GET /healthz` | Health check |
 
-## Origin
 
-This project was extracted from the
-[boettiger-lab/nautilus](https://github.com/boettiger-lab/nautilus) repository.
 
 ## License
 
