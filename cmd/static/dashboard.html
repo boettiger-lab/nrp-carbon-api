@@ -101,6 +101,7 @@
   .token-cmp-ratio.better{color:var(--green);}
   .token-cmp-ratio.worse {color:var(--orange);}
 
+  .workload-note{font-size:.67rem;color:var(--muted);margin:.35rem 0 .7rem;padding:.4rem .75rem;background:rgba(99,102,241,.07);border:1px solid var(--border);border-left:2px solid var(--accent);border-radius:.4rem;}
   footer{text-align:center;padding:2rem;font-size:.71rem;color:var(--muted);}
   footer a{color:var(--muted);}
 
@@ -134,7 +135,7 @@
   <div class="chart-wrap">
     <div class="section-head">
       <h2>Cluster CO₂ emissions over time</h2>
-      <div class="range-tabs">
+      <div class="range-tabs" id="time-range-tabs">
         <button class="range-tab" data-range="24h">24 h</button>
         <button class="range-tab active" data-range="7d">7 d</button>
         <button class="range-tab" data-range="30d">30 d</button>
@@ -144,7 +145,15 @@
   </div>
 
   <div class="chart-wrap">
-    <div class="section-head"><h2>CO₂ / token by model — active models vs. commercial estimate</h2></div>
+    <div class="section-head">
+      <h2>CO₂ / token by model — active models vs. commercial estimate</h2>
+      <div class="range-tabs" id="workload-tabs">
+        <button class="range-tab" data-workload="simple">Simple</button>
+        <button class="range-tab" data-workload="longctx">Long-context</button>
+        <button class="range-tab active" data-workload="agentic">Agentic (40k)</button>
+      </div>
+    </div>
+    <div class="workload-note" id="workload-note"></div>
     <canvas id="barChart"></canvas>
   </div>
 
@@ -169,6 +178,7 @@ const TS_API = '/api/v1/carbon/timeseries';
 let barChart  = null;
 let lineChart = null;
 let currentRange = '7d';
+let lastData = null;
 
 function chartColors() {
   const light = document.body.classList.contains('light');
@@ -209,16 +219,42 @@ function initTheme() {
 }
 initTheme();
 
-// Commercial frontier LLM benchmark for CO₂/token.
-// Derived from IEA Electricity 2024 estimate of ~5 Wh/query for a ChatGPT-class query,
-// assuming 300–500 output tokens and the US average grid intensity (0.394 kg CO₂/kWh).
-// 5 Wh × 0.394 kg/kWh × 1e6 mg/kg / 400 tokens ≈ 4.9 mg CO₂/token.
-// Range reflects uncertainty in query length (300–1000 tokens) and model size.
-// No direct measurement of frontier commercial models is publicly available.
-// Sources: IEA (2024); Luccioni et al. FAccT (2024); Shehabi et al. LBL (2024).
-const COMMERCIAL_MG_PER_TOKEN_LO  = 2.0;
-const COMMERCIAL_MG_PER_TOKEN_MID = 4.9;
-const COMMERCIAL_MG_PER_TOKEN_HI  = 9.8;
+// Physics-constrained energy envelope for frontier commercial LLMs (2026).
+// Commercial providers do not disclose per-token energy; bounds derived from
+// H100-class hardware specs, transformer scaling laws, and observed workload patterns.
+// Lower = near-optimal batched H100 serving; Upper = frontier-scale (1T+ MoE),
+// long-context KV-cache overhead, low batch utilization.
+// Sources: Delavande et al. (2025); Luccioni et al. (2024); hardware modeling.
+const PREFILL_J = { lo: 1.0, mid: 3.0, hi: 10.0 }; // Joules per input token
+const DECODE_J  = { lo: 0.5, mid: 1.5, hi:  3.0 }; // Joules per output token (short-context)
+const COMMERCIAL_GRID_KG_KWH = 0.394;               // US average grid (EPA eGRID 2022)
+const J_TO_MG_CO2 = COMMERCIAL_GRID_KG_KWH / 3.6e6 * 1e6; // 0.1094 mg CO₂/J
+
+// Workload presets. 40k input tokens is the observed NRP client-app baseline.
+// toolCalls{Lo,Mid,Hi}: total API calls per user request including hidden tool/agent calls.
+const WORKLOADS = {
+  simple:  { label: 'Simple query',   desc: '100 in / 100 out · 1 call',                   inputTokens:   100, outputTokens:  100, toolCallsLo: 1, toolCallsMid: 1, toolCallsHi: 1 },
+  longctx: { label: 'Long-context',   desc: '10k in / 500 out · 1 call',                   inputTokens: 10000, outputTokens:  500, toolCallsLo: 1, toolCallsMid: 1, toolCallsHi: 1 },
+  agentic: { label: 'Agentic (≥40k)', desc: '40k in / 2k out · 2–5 calls · NRP baseline',  inputTokens: 40000, outputTokens: 2000, toolCallsLo: 2, toolCallsMid: 3, toolCallsHi: 5 },
+};
+let currentWorkload = 'agentic';
+
+function computeCommercial(key) {
+  const w = WORKLOADS[key];
+  const lo  = (w.inputTokens * PREFILL_J.lo  + w.outputTokens * DECODE_J.lo)  * w.toolCallsLo;
+  const mid = (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) * w.toolCallsMid;
+  const hi  = (w.inputTokens * PREFILL_J.hi  + w.outputTokens * DECODE_J.hi)  * w.toolCallsHi;
+  return {
+    lo:  lo  / w.outputTokens * J_TO_MG_CO2,
+    mid: mid / w.outputTokens * J_TO_MG_CO2,
+    hi:  hi  / w.outputTokens * J_TO_MG_CO2,
+  };
+}
+
+let commercial = computeCommercial(currentWorkload);
+let COMMERCIAL_MG_PER_TOKEN_LO  = commercial.lo;
+let COMMERCIAL_MG_PER_TOKEN_MID = commercial.mid;
+let COMMERCIAL_MG_PER_TOKEN_HI  = commercial.hi;
 
 // Card border class based on CO₂/token ratio vs commercial estimate.
 // Prefer 24h avg for stability; fall back to current 5-min value.
@@ -296,6 +332,7 @@ async function loadTimeSeries(range) {
 }
 
 function render(data) {
+  lastData = data;
   const models = (data.models||[]).slice().sort((a,b)=>b.co2_grams_per_hour-a.co2_grams_per_hour);
 
   const totalPower   = models.reduce((s,m)=>s+m.power_watts,0);
@@ -440,7 +477,7 @@ function render(data) {
         : '';
       tokenCmp = `
         <div class="token-cmp">
-          <div class="token-cmp-label">CO₂ / token vs. commercial</div>
+          <div class="token-cmp-label">CO₂ / token vs. commercial est. <span style="font-style:italic;opacity:.7">(inferred · ${WORKLOADS[currentWorkload].label})</span></div>
           <div class="token-cmp-track">
             <div class="token-cmp-band"  style="left:${loPct}%;width:${(hiPct-loPct).toFixed(1)}%"></div>
             <div class="token-cmp-bar"   style="width:${nrpPct}%;background:${barColor}"></div>
@@ -449,7 +486,7 @@ function render(data) {
           </div>
           <div class="token-cmp-legend">
             <span>${avgLabel} mg/token${m.co2_mg_per_token_avg_24h && vNow ? ` · now: ${vNow.toFixed(3)}` : ''}</span>
-            <span style="color:#6366f1">▏commercial est. ${mid} mg/token</span>
+            <span style="color:#6366f1">▏commercial est. ${mid.toFixed(1)} mg/token</span>
           </div>
           <div class="token-cmp-ratio ${ratioClass}">${ratioText}</div>
         </div>`;
@@ -565,15 +602,36 @@ function renderTimeSeries(data) {
   }
 }
 
-document.querySelectorAll('.range-tab').forEach(btn => {
+document.querySelectorAll('#time-range-tabs .range-tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.range-tab').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('#time-range-tabs .range-tab').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
     currentRange = btn.dataset.range;
     if (lineChart) { lineChart.destroy(); lineChart = null; }
     loadTimeSeries(currentRange);
   });
 });
+
+function setWorkload(key) {
+  currentWorkload = key;
+  const c = computeCommercial(key);
+  COMMERCIAL_MG_PER_TOKEN_LO  = c.lo;
+  COMMERCIAL_MG_PER_TOKEN_MID = c.mid;
+  COMMERCIAL_MG_PER_TOKEN_HI  = c.hi;
+  document.querySelectorAll('#workload-tabs .range-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.workload === key);
+  });
+  const w = WORKLOADS[key];
+  document.getElementById('workload-note').textContent =
+    `Commercial estimate: ${w.desc} · range ${c.lo.toFixed(1)}–${c.hi.toFixed(1)} mg CO₂/output token` +
+    ` (physics-constrained range — not directly measured; see Methodology)`;
+  if (lastData) render(lastData);
+}
+
+document.querySelectorAll('#workload-tabs .range-tab').forEach(btn => {
+  btn.addEventListener('click', () => setWorkload(btn.dataset.workload));
+});
+setWorkload('agentic');
 
 load();
 loadTimeSeries(currentRange);

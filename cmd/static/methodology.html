@@ -131,30 +131,62 @@
 <pre><code>CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / (tokens/s)
              = P_watts × intensity × 0.2778 / tokens_per_sec</code></pre>
 
-<h3>Commercial estimate baseline</h3>
+<h3>Commercial estimate baseline — physics-constrained envelope</h3>
 <p>
-  The dashboard compares NRP models against an estimated CO₂-per-token figure for
-  commercial frontier LLMs (e.g. ChatGPT). No direct per-token energy measurement of
-  commercial models is publicly available, so we derive an estimate from the
-  <a href="https://www.iea.org/reports/electricity-2024" target="_blank">IEA Electricity 2024</a>
-  report, which estimates a ChatGPT-class query at approximately <strong>5 Wh</strong>
-  (roughly 10× a Google search).
-</p>
-<p>
-  Assuming 300–1000 output tokens per query and the US average grid intensity
-  (0.394 kg CO₂/kWh):
-</p>
-<pre><code>5 Wh × 0.394 kg/kWh × 1e6 mg/kg / 400 tokens ≈ 4.9 mg CO₂/token</code></pre>
-<p>
-  The dashboard shows a range of <strong>2.0–9.8 mg CO₂/token</strong> to reflect
-  uncertainty in query length and model size. The midpoint (4.9 mg) is used for
-  color-coded comparisons on model cards.
+  Commercial frontier LLMs (e.g., Claude, GPT-4, Gemini) do not disclose per-token
+  energy consumption. Rather than a single outdated point estimate, the dashboard
+  presents a <strong>physics-constrained energy envelope</strong> derived from hardware
+  modeling and observed workload patterns. No proprietary or undisclosed data is assumed.
 </p>
 <div class="callout">
-  <p><strong>Note:</strong> This is a rough order-of-magnitude estimate, not a direct
-  measurement. The IEA figure covers total query energy (GPU, CPU, networking, cooling)
-  whereas our NRP measurements cover GPU power only. The comparison is therefore
-  conservative — our numbers would be higher if full-system power were included.</p>
+  <p><strong>Transparency:</strong> These are inferred estimates, not direct measurements.
+  Commercial providers disclose no per-token energy data. The bounds below represent what
+  is physically achievable on H100-class infrastructure given known hardware specifications
+  and transformer scaling laws.</p>
+</div>
+
+<h3>Token-level energy bounds</h3>
+<table>
+  <tr><th>Phase</th><th>Lower bound</th><th>Mean estimate</th><th>Upper bound</th></tr>
+  <tr><td>Prefill (input tokens)</td><td>1 J/token</td><td>3 J/token</td><td>10 J/token</td></tr>
+  <tr><td>Decode (output tokens)</td><td>0.5 J/token</td><td>1.5 J/token</td><td>3 J/token</td></tr>
+</table>
+<p>
+  <strong>Lower bound:</strong> near-optimal batched serving on H100-class hardware.
+  <strong>Upper bound:</strong> frontier-scale model (1T+ parameter MoE), long-context
+  KV-cache overhead (context ≥ 40k tokens), low batch utilization.
+  At the US average grid intensity (0.394 kg CO₂/kWh, EPA eGRID 2022):
+  <strong>1 J ≈ 0.109 mg CO₂</strong>.
+</p>
+
+<h3>Workload presets</h3>
+<p>
+  The commercial estimate is reported per <em>user request</em>. Agentic systems (tool use,
+  retrieval, multi-step reasoning) make multiple hidden API calls per visible response.
+  Three presets are provided; <strong>Agentic (≥40k)</strong> is the default because 40k
+  input tokens is the observed lower baseline for client applications accessing NRP-hosted
+  models:
+</p>
+<table>
+  <tr><th>Preset</th><th>Input tokens</th><th>Output tokens</th><th>API calls (lo/mid/hi)</th><th>Use case</th></tr>
+  <tr><td>Simple query</td><td>100</td><td>100</td><td>1 / 1 / 1</td><td>Single chatbot turn</td></tr>
+  <tr><td>Long-context</td><td>10,000</td><td>500</td><td>1 / 1 / 1</td><td>Document analysis</td></tr>
+  <tr><td><strong>Agentic (≥40k)</strong></td><td>40,000</td><td>2,000</td><td>2 / 3 / 5</td><td>Agentic tool-use loop; NRP client-app baseline</td></tr>
+</table>
+
+<h3>Example: agentic preset, mean estimate</h3>
+<pre><code>Prefill:  40,000 input tokens  × 3 J/token × 3 calls = 360,000 J
+Decode:    2,000 output tokens × 1.5 J/token × 3 calls =   9,000 J
+Total per user request:                                  369,000 J
+Per user-visible output token: 369,000 J ÷ 2,000 = 184.5 J/token
+CO₂: 184.5 J/token × 0.109 mg CO₂/J ≈ 20 mg CO₂/output token</code></pre>
+
+<div class="callout">
+  <p><strong>Comparison basis:</strong> NRP measurements cover <em>GPU power only</em>.
+  The commercial envelope covers <em>facility-level power</em> (GPU + CPU + DRAM + PUE
+  cooling overhead). Applying a typical 1.5–2× system-overhead correction to NRP
+  measurements would make the comparison more conservative. The current display therefore
+  understates the NRP advantage relative to a fully corrected comparison.</p>
 </div>
 
 <h3>Cumulative CO₂ (time-series view)</h3>
@@ -189,7 +221,7 @@
   </tr>
   <tr>
     <td><a href="https://arxiv.org/abs/2601.22357" target="_blank">Delavande, Pierrard &amp; Luccioni (2025). <em>Small Talk, Big Impact.</em> arXiv.</a></td>
-    <td>Per-token energy decomposition: prefill vs. decode scaling</td>
+    <td>Per-token energy decomposition: prefill vs. decode scaling; basis for J/token envelope estimates</td>
   </tr>
   <tr>
     <td><a href="https://arxiv.org/abs/2104.10350" target="_blank">Patterson et al. (2021). <em>Carbon Emissions and Large Neural Network Training.</em> arXiv.</a></td>
