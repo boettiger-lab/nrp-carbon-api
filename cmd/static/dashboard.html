@@ -257,6 +257,13 @@ let COMMERCIAL_MG_PER_TOKEN_LO  = commercial.lo;
 let COMMERCIAL_MG_PER_TOKEN_MID = commercial.mid;
 let COMMERCIAL_MG_PER_TOKEN_HI  = commercial.hi;
 
+// Commercial J/token (blended, for utilization context).
+function commercialJPerToken(key) {
+  const w = WORKLOADS[key];
+  return (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) / (w.inputTokens + w.outputTokens);
+}
+let COMMERCIAL_J_PER_TOKEN = commercialJPerToken(currentWorkload);
+
 // Card border class based on CO₂/token ratio vs commercial estimate.
 // Prefer 24h avg for stability; fall back to current 5-min value.
 // orange = at the commercial (GPT) level; red = worse than commercial.
@@ -438,6 +445,9 @@ function render(data) {
     const cc  = co2Color(m.co2_grams_per_hour);
     const dot = intensityColor(m.carbon_intensity_kg_per_kwh);
     const institution = m.node ? m.node.split('.').slice(-3).join('.') : '—';
+    const jPerToken = active ? m.power_watts / m.tokens_per_sec : null;
+    const promptPct = active && m.tokens_per_sec > 0 ? (m.prompt_tokens_per_sec / m.tokens_per_sec * 100) : null;
+    const jColor = jPerToken == null ? '' : jPerToken < COMMERCIAL_J_PER_TOKEN * 0.5 ? 'green' : jPerToken < COMMERCIAL_J_PER_TOKEN ? 'yellow' : jPerToken < COMMERCIAL_J_PER_TOKEN * 2 ? 'orange' : 'red';
 
     // Build CO₂/token comparison section.
     // Requires either a 24h avg (always filtered to ≥5 tok/s) or current throughput ≥5 tok/s.
@@ -489,7 +499,10 @@ function render(data) {
             <span>${avgLabel} mg/token${m.co2_mg_per_token_avg_24h && vNow ? ` · now: ${vNow.toFixed(3)}` : ''}</span>
             <span style="color:#6366f1">▏commercial est. ${mid.toFixed(1)} mg/token</span>
           </div>
-          <div class="token-cmp-ratio ${ratioClass}">${ratioText}</div>
+          <div class="token-cmp-ratio ${ratioClass}">${ratioText}</div>${
+            jPerToken != null && jPerToken > COMMERCIAL_J_PER_TOKEN
+            ? `<div style="font-size:.65rem;color:var(--muted);margin-top:.3rem">Energy/token (${fmt(jPerToken,1)} J) exceeds commercial est. (${fmt(COMMERCIAL_J_PER_TOKEN,1)} J) — likely reflects GPU underutilization at current load, not model inefficiency.</div>`
+            : ''}
         </div>`;
     }
 
@@ -501,15 +514,15 @@ function render(data) {
       </div>
       <div class="card-meta">
         <span>${m.gpu_count}× ${m.gpu_hardware||'—'}</span>
-        <span>${institution}</span>
+        <span>${institution}</span>${promptPct != null ? `<span>${fmt(promptPct,0)}% input tokens</span>` : ''}
       </div>
       <div class="metrics">
         <div class="metric"><div class="metric-label">CO₂ / hr</div><div class="metric-value ${cc}">${fmt(m.co2_grams_per_hour)}</div><div class="metric-unit">grams</div></div>
         <div class="metric"><div class="metric-label">GPU Power</div><div class="metric-value">${fmt(m.power_watts)}</div><div class="metric-unit">watts</div></div>
         <div class="metric"><div class="metric-label">CO₂ / token</div><div class="metric-value">${m.co2_mg_per_token?fmt(m.co2_mg_per_token,3):'—'}</div><div class="metric-unit">mg · 5 min${m.co2_mg_per_token_avg_24h ? ` · <span style="color:var(--muted)">24h avg: ${fmt(m.co2_mg_per_token_avg_24h,3)}</span>` : ''}</div></div>
-        <div class="metric"><div class="metric-label">Output tok/s</div><div class="metric-value">${active?fmt(m.generation_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s generated</div></div>
+        <div class="metric"><div class="metric-label">Energy / token</div><div class="metric-value ${jColor}">${jPerToken != null ? fmt(jPerToken,2) : '—'}</div><div class="metric-unit">J/token${jPerToken != null ? ` · est. ${fmt(COMMERCIAL_J_PER_TOKEN,1)} commercial` : ''}</div></div>
         <div class="metric"><div class="metric-label">Input tok/s</div><div class="metric-value">${active?fmt(m.prompt_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s prompt</div></div>
-        <div class="metric"><div class="metric-label">Total tok/s</div><div class="metric-value">${active?fmt(m.tokens_per_sec):'—'}</div><div class="metric-unit">in + out</div></div>
+        <div class="metric"><div class="metric-label">Output tok/s</div><div class="metric-value">${active?fmt(m.generation_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s generated</div></div>
       </div>
       ${tokenCmp}
       <div class="grid-intensity">
@@ -621,12 +634,13 @@ function setWorkload(key) {
   COMMERCIAL_MG_PER_TOKEN_LO  = c.lo;
   COMMERCIAL_MG_PER_TOKEN_MID = c.mid;
   COMMERCIAL_MG_PER_TOKEN_HI  = c.hi;
+  COMMERCIAL_J_PER_TOKEN = commercialJPerToken(key);
   document.querySelectorAll('#workload-tabs .range-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.workload === key);
   });
   const w = WORKLOADS[key];
   document.getElementById('workload-note').textContent =
-    `Commercial estimate: ${w.desc} · range ${c.lo.toFixed(1)}–${c.hi.toFixed(1)} mg CO₂/output token` +
+    `Commercial estimate: ${w.desc} · range ${c.lo.toFixed(1)}–${c.hi.toFixed(1)} mg CO₂/token` +
     ` (physics-constrained range — not directly measured; see Methodology)`;
   if (lastData) render(lastData);
 }

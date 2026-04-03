@@ -225,6 +225,29 @@ so per-token cost is independent of how many calls make up the request.</code></
   understates the NRP advantage relative to a fully corrected comparison.</p>
 </div>
 
+<h3>Energy per token and GPU utilization</h3>
+<p>
+  Each model card displays <strong>J/token</strong> (Joules per token) — the raw energy
+  efficiency of that GPU for its current workload:
+</p>
+<pre><code>J/token = GPU_power_watts / total_tokens_per_sec</code></pre>
+<p>
+  This is compared to the commercial mid estimate for the selected workload preset
+  (e.g., 2.9 J/token for the agentic preset). When a model's J/token exceeds the
+  commercial estimate, it usually indicates <strong>GPU underutilization</strong> — the
+  GPU is drawing significant idle or near-idle power while processing relatively few
+  tokens, inflating the per-token energy cost. This is not a reflection of model
+  inefficiency; it means the GPU is not being kept busy enough for the energy it consumes.
+</p>
+<p>
+  The card also displays the <strong>observed prompt token percentage</strong> — what
+  fraction of total tokens are input (prefill) vs output (decode). This allows users to
+  judge whether the model's actual workload mix resembles the selected commercial preset
+  (e.g., the agentic preset assumes 95% input tokens). When the ratios diverge
+  significantly, the blended CO₂/token comparison becomes less precise because prefill
+  and decode have different energy profiles.
+</p>
+
 <h3>Cumulative CO₂ and cluster CO₂/token (time-series view)</h3>
 <p>
   For the time-series charts, we query the Prometheus range API at adaptive resolution
@@ -244,6 +267,14 @@ sum by (namespace, container) (
   <li>Datacenter PUE (Power Usage Effectiveness) is not applied (adds 10–50%)</li>
   <li>Carbon intensity values are annual averages; real-time grid mix varies hour-to-hour</li>
   <li>Nodes not matching hostname or namespace patterns fall back to the California (CAMX) average</li>
+  <li><strong>NRP CO₂/token is the real amortized cost including GPU standby power;</strong> the
+    commercial J/token estimates assume near-peak utilization. At low throughput, NRP's
+    per-token cost is inflated by idle power — this is honest carbon accounting (the GPU is
+    on regardless) but is a different quantity than the marginal cost of one additional token
+    on a fully loaded commercial cluster</li>
+  <li>DCGM reports a single power reading per GPU; we cannot decompose energy into prefill vs
+    decode phases. The blended J/token depends on the workload mix, which is shown on each
+    card for transparency</li>
   <li>The eGRID intensity table in <code>internal/carbon/intensity.go</code> will be updated as new annual data is published</li>
 </ul>
 <p>
