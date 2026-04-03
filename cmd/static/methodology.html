@@ -208,9 +208,14 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
 <h3>Example: agentic preset, mean estimate</h3>
 <pre><code>Prefill:  40,000 input tokens  × 3 J/token × 3 calls = 360,000 J
 Decode:    2,000 output tokens × 1.5 J/token × 3 calls =   9,000 J
-Total per user request:                                  369,000 J
-Per user-visible output token: 369,000 J ÷ 2,000 = 184.5 J/token
-CO₂: 184.5 J/token × 0.109 mg CO₂/J ≈ 20 mg CO₂/output token</code></pre>
+Total energy per user request:                           369,000 J
+
+Total tokens processed:  (40,000 + 2,000) × 3 calls = 126,000 tokens
+Per token: 369,000 J ÷ 126,000 tokens ≈ 2.93 J/token
+CO₂: 2.93 J/token × 0.109 mg CO₂/J ≈ 0.32 mg CO₂/token
+
+Note: tool call count cancels — energy and total tokens both scale linearly,
+so per-token cost is independent of how many calls make up the request.</code></pre>
 
 <div class="callout">
   <p><strong>Comparison basis:</strong> NRP measurements cover <em>GPU power only</em>.

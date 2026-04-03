@@ -241,13 +241,14 @@ let currentWorkload = 'agentic';
 
 function computeCommercial(key) {
   const w = WORKLOADS[key];
-  const lo  = (w.inputTokens * PREFILL_J.lo  + w.outputTokens * DECODE_J.lo)  * w.toolCallsLo;
-  const mid = (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) * w.toolCallsMid;
-  const hi  = (w.inputTokens * PREFILL_J.hi  + w.outputTokens * DECODE_J.hi)  * w.toolCallsHi;
+  // Denominator is total tokens (input + output) per call — consistent with how
+  // NRP measures CO₂/token (total tokens processed by the GPU, not output-only).
+  // toolCalls cancel: energy and total tokens both scale linearly with call count.
+  const totalTokens = w.inputTokens + w.outputTokens;
   return {
-    lo:  lo  / w.outputTokens * J_TO_MG_CO2,
-    mid: mid / w.outputTokens * J_TO_MG_CO2,
-    hi:  hi  / w.outputTokens * J_TO_MG_CO2,
+    lo:  (w.inputTokens * PREFILL_J.lo  + w.outputTokens * DECODE_J.lo)  / totalTokens * J_TO_MG_CO2,
+    mid: (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) / totalTokens * J_TO_MG_CO2,
+    hi:  (w.inputTokens * PREFILL_J.hi  + w.outputTokens * DECODE_J.hi)  / totalTokens * J_TO_MG_CO2,
   };
 }
 
