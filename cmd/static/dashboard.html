@@ -448,7 +448,7 @@ function render(data) {
     if (!cmpVal && m.tokens_per_sec > 0.1 && m.tokens_per_sec < MIN_THROUGHPUT_FOR_TOKEN_METRIC) {
       // Low-throughput note: model is generating but too slowly to give a meaningful efficiency ratio.
       tokenCmp = `<div style="margin-top:.65rem;padding-top:.65rem;border-top:1px solid var(--border);font-size:.68rem;color:var(--muted)">
-        CO₂/token not shown — throughput too low (${fmt(m.tokens_per_sec,1)} tok/s) to represent real efficiency.
+        CO₂/token not shown — total throughput too low (${fmt(m.tokens_per_sec,1)} tok/s in+out) to represent real efficiency.
         Footprint: ${fmt(m.co2_grams_per_hour)} g CO₂/hr.</div>`;
     }
     if (cmpVal > 0) {
@@ -506,7 +506,9 @@ function render(data) {
         <div class="metric"><div class="metric-label">CO₂ / hr</div><div class="metric-value ${cc}">${fmt(m.co2_grams_per_hour)}</div><div class="metric-unit">grams</div></div>
         <div class="metric"><div class="metric-label">GPU Power</div><div class="metric-value">${fmt(m.power_watts)}</div><div class="metric-unit">watts</div></div>
         <div class="metric"><div class="metric-label">CO₂ / token</div><div class="metric-value">${m.co2_mg_per_token?fmt(m.co2_mg_per_token,3):'—'}</div><div class="metric-unit">mg · 5 min${m.co2_mg_per_token_avg_24h ? ` · <span style="color:var(--muted)">24h avg: ${fmt(m.co2_mg_per_token_avg_24h,3)}</span>` : ''}</div></div>
-        <div class="metric"><div class="metric-label">Tokens / sec</div><div class="metric-value">${active?fmt(m.tokens_per_sec):'—'}</div><div class="metric-unit">tok/s</div></div>
+        <div class="metric"><div class="metric-label">Output tok/s</div><div class="metric-value">${active?fmt(m.generation_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s generated</div></div>
+        <div class="metric"><div class="metric-label">Input tok/s</div><div class="metric-value">${active?fmt(m.prompt_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s prompt</div></div>
+        <div class="metric"><div class="metric-label">Total tok/s</div><div class="metric-value">${active?fmt(m.tokens_per_sec):'—'}</div><div class="metric-unit">in + out</div></div>
       </div>
       ${tokenCmp}
       <div class="grid-intensity">

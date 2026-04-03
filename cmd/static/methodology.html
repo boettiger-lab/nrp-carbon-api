@@ -80,19 +80,42 @@
   facility energy.</p>
 </div>
 
-<h2>Step 2 — Token Generation Rate</h2>
+<h2>Step 2 — Token Throughput (Prompt + Generation)</h2>
 <p>
-  Token throughput is read from vLLM's built-in Prometheus metrics, specifically the
-  5-minute rolling rate of output tokens:
+  Token throughput is read from vLLM's built-in Prometheus metrics. Two counters are
+  tracked separately and summed into a total token rate:
 </p>
-<pre><code>sum by (namespace, container, model_name) (
+<pre><code>-- Output (decode) tokens generated per second:
+sum by (namespace, container, model_name) (
   rate(vllm:generation_tokens_total[5m])
+)
+
+-- Input (prefill) tokens processed per second:
+sum by (namespace, container, model_name) (
+  rate(vllm:prompt_tokens_total[5m])
 )</code></pre>
 <p>
-  This enables the <strong>CO₂ per token</strong> metric, which is only reported when the
-  model is actively generating at meaningful throughput (&ge; 5 tok/s). Below this
-  threshold the ratio is dominated by near-idle power draw rather than the model's
-  efficiency under real load.
+  Both phases consume GPU energy: the <strong>prefill</strong> phase runs attention over
+  every input token before the first output token is produced; the <strong>decode</strong>
+  phase generates one output token at a time. Counting only output tokens would therefore
+  misrepresent the true cost of inference — especially for agentic workloads where a single
+  user-visible response may involve tens of thousands of input tokens across multiple hidden
+  tool calls.
+</p>
+<div class="callout">
+  <p><strong>Why this matters for agentic AI:</strong> In the agentic preset (40k input /
+  2k output / 3 API calls), input tokens account for roughly 95% of all tokens processed.
+  If CO₂/token were computed over output tokens only, it would overstate the per-token cost
+  by ~20×. The dashboard uses <em>total tokens</em> (input + output) as the denominator, so
+  reported CO₂/token reflects the full energy cost amortized across every token the GPU
+  processed.</p>
+</div>
+<p>
+  The <strong>CO₂ per token</strong> metric is only reported when total throughput (input +
+  output) is at least 5 tok/s. Below this threshold the ratio is dominated by near-idle
+  power draw rather than the model's efficiency under real load. The dashboard cards break
+  down throughput into <em>Output tok/s</em>, <em>Input tok/s</em>, and <em>Total tok/s</em>
+  for transparency.
 </p>
 
 <h2>Step 3 — Carbon Intensity by Grid Location</h2>
@@ -127,9 +150,17 @@
 <pre><code>CO₂_g/hr = P_watts × intensity_kg/kWh
          = P_watts × intensity   # because W × kg/kWh = W × kg/(1000W·h) × 1000 = g/h</code></pre>
 
-<h3>CO₂ milligrams per output token</h3>
-<pre><code>CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / (tokens/s)
-             = P_watts × intensity × 0.2778 / tokens_per_sec</code></pre>
+<h3>CO₂ milligrams per token (total tokens)</h3>
+<pre><code>total_tokens_per_sec = prompt_tokens_per_sec + generation_tokens_per_sec
+
+CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / total_tokens_per_sec
+             = P_watts × intensity × 0.2778 / total_tokens_per_sec</code></pre>
+<p>
+  The denominator is <strong>total tokens processed</strong> (prompt + generation), not
+  output tokens alone. This is the correct normalization: the GPU expends energy on every
+  token it touches — both the input context during prefill and each generated token during
+  decode.
+</p>
 
 <h3>Commercial estimate baseline — physics-constrained envelope</h3>
 <p>
@@ -189,13 +220,18 @@ CO₂: 184.5 J/token × 0.109 mg CO₂/J ≈ 20 mg CO₂/output token</code></pr
   understates the NRP advantage relative to a fully corrected comparison.</p>
 </div>
 
-<h3>Cumulative CO₂ (time-series view)</h3>
+<h3>Cumulative CO₂ and cluster CO₂/token (time-series view)</h3>
 <p>
   For the time-series charts, we query the Prometheus range API at adaptive resolution
   (5-minute steps for 24 h, hourly for 7 d, 6-hourly for 30 d),
   apply the same per-node intensity to each sample, and integrate:
 </p>
-<pre><code>CO₂_kg_cumulative = Σ (P_watts_i × intensity_i × Δt_hrs / 1000)</code></pre>
+<pre><code>CO₂_kg_cumulative = Σ (P_watts_i × intensity_i × Δt_hrs / 1000)
+
+-- Total token rate used as denominator for cluster-wide CO₂/token:
+sum by (namespace, container) (
+  rate(vllm:generation_tokens_total[5m]) + rate(vllm:prompt_tokens_total[5m])
+)</code></pre>
 
 <h2>Limitations and Future Work</h2>
 <ul style="color:#cbd5e1; padding-left:1.5rem; margin:0.5rem 0 1rem;">

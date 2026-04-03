@@ -20,9 +20,11 @@ type ModelMetrics struct {
 	Node       string `json:"node"`
 
 	// Raw
-	GPUCount        int     `json:"gpu_count"`
-	PowerWatts      float64 `json:"power_watts"`
-	TokensPerSec    float64 `json:"tokens_per_sec"`
+	GPUCount               int     `json:"gpu_count"`
+	PowerWatts             float64 `json:"power_watts"`
+	PromptTokensPerSec     float64 `json:"prompt_tokens_per_sec"`     // input (prefill) token rate
+	GenerationTokensPerSec float64 `json:"generation_tokens_per_sec"` // output (decode) token rate
+	TokensPerSec           float64 `json:"tokens_per_sec"`            // total = prompt + generation
 
 	// Carbon
 	CarbonIntensity      float64 `json:"carbon_intensity_kg_per_kwh"`        // grid intensity used
@@ -151,8 +153,8 @@ func (s *Scraper) scrape() {
 		log.Printf("scraper: gpu info query failed: %v", err)
 	}
 
-	// 3. Token generation rate per pod
-	tokensByKey, modelNameByKey, err := s.queryTokens()
+	// 3. Token generation and prompt rates per pod
+	genTokensByKey, promptTokensByKey, modelNameByKey, err := s.queryTokens()
 	if err != nil {
 		log.Printf("scraper: token query failed: %v", err)
 	}
@@ -162,7 +164,10 @@ func (s *Scraper) scrape() {
 	for k := range powerByKey {
 		keys[k] = struct{}{}
 	}
-	for k := range tokensByKey {
+	for k := range genTokensByKey {
+		keys[k] = struct{}{}
+	}
+	for k := range promptTokensByKey {
 		keys[k] = struct{}{}
 	}
 
@@ -176,32 +181,36 @@ func (s *Scraper) scrape() {
 		node := nodeByKey[key]
 		intensity := carbon.IntensityForNode(node, ns)
 
-		tokensPerSec := tokensByKey[key]
+		genTok    := genTokensByKey[key]
+		promptTok := promptTokensByKey[key]
+		totalTok  := genTok + promptTok
 		modelName := modelNameByKey[key]
-		gpuCount := gpuByKey[key]
-		hw := hardwareByKey[key]
+		gpuCount  := gpuByKey[key]
+		hw        := hardwareByKey[key]
 
 		co2PerHour := carbon.GramsPerHour(power, intensity)
 		co2PerToken := 0.0
-		if tokensPerSec > 5.0 {
-			// Only compute CO₂/token at meaningful throughput (≥5 tok/s).
-			// Below this threshold the ratio is dominated by the near-idle power
-			// draw rather than the model's efficiency under real load.
-			co2PerToken = carbon.MgPerToken(power, intensity, tokensPerSec)
+		if totalTok > 5.0 {
+			// CO₂/token uses total tokens (prompt + generation) as denominator:
+			// both prefill and decode phases consume GPU energy, and agentic
+			// workloads are dominated by large prompt (input) token counts.
+			co2PerToken = carbon.MgPerToken(power, intensity, totalTok)
 		}
 
 		m := &ModelMetrics{
-			ModelName:       modelName,
-			Namespace:       ns,
-			Container:       container,
-			GPUHardware:     hw,
-			Node:            node,
-			GPUCount:        gpuCount,
-			PowerWatts:      math.Round(power*10) / 10,
-			TokensPerSec:    math.Round(tokensPerSec*10) / 10,
-			CarbonIntensity: intensity,
-			CO2GramsPerHour: math.Round(co2PerHour*10) / 10,
-			UpdatedAt:       now,
+			ModelName:              modelName,
+			Namespace:              ns,
+			Container:              container,
+			GPUHardware:            hw,
+			Node:                   node,
+			GPUCount:               gpuCount,
+			PowerWatts:             math.Round(power*10) / 10,
+			PromptTokensPerSec:     math.Round(promptTok*10) / 10,
+			GenerationTokensPerSec: math.Round(genTok*10) / 10,
+			TokensPerSec:           math.Round(totalTok*10) / 10,
+			CarbonIntensity:        intensity,
+			CO2GramsPerHour:        math.Round(co2PerHour*10) / 10,
+			UpdatedAt:              now,
 		}
 		if co2PerToken > 0 {
 			m.CO2MgPerToken = math.Round(co2PerToken*1000) / 1000
@@ -283,26 +292,42 @@ func (s *Scraper) queryGPUInfo() (map[string]int, map[string]string, error) {
 	return counts, hardware, nil
 }
 
-// queryTokens returns 5-minute token generation rate keyed by "namespace/container".
+// queryTokens returns 5-minute prompt and generation token rates keyed by "namespace/container".
 // Also returns the LLM model_name label.
-func (s *Scraper) queryTokens() (map[string]float64, map[string]string, error) {
-	results, err := s.client.Query(
+// Prompt tokens (prefill/input) and generation tokens (decode/output) are returned separately
+// so callers can track agentic workloads where input tokens dominate.
+func (s *Scraper) queryTokens() (genTokens, promptTokens map[string]float64, names map[string]string, err error) {
+	genResults, err := s.client.Query(
 		`sum by (namespace, container, model_name) (rate(vllm:generation_tokens_total[5m]))`,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	promptResults, err := s.client.Query(
+		`sum by (namespace, container, model_name) (rate(vllm:prompt_tokens_total[5m]))`,
+	)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	tokens := make(map[string]float64)
-	names := make(map[string]string)
-	for _, r := range results {
+	genTokens = make(map[string]float64)
+	promptTokens = make(map[string]float64)
+	names = make(map[string]string)
+	for _, r := range genResults {
 		key := r.Metric["namespace"] + "/" + r.Metric["container"]
-		tokens[key] += r.Value
+		genTokens[key] += r.Value
 		if names[key] == "" {
 			names[key] = r.Metric["model_name"]
 		}
 	}
-	return tokens, names, nil
+	for _, r := range promptResults {
+		key := r.Metric["namespace"] + "/" + r.Metric["container"]
+		promptTokens[key] += r.Value
+		if names[key] == "" {
+			names[key] = r.Metric["model_name"]
+		}
+	}
+	return genTokens, promptTokens, names, nil
 }
 
 // ClusterTimePoint is one time-step of aggregated cluster-wide carbon data.
@@ -327,8 +352,10 @@ func (s *Scraper) ClusterTimeSeries(rangeBack, step time.Duration) ([]ClusterTim
 	if err != nil {
 		return nil, err
 	}
+	// Use total tokens (prompt + generation) as denominator for CO₂/token.
+	// Agentic workloads have large prompt token counts that dominate compute.
 	tokenSeries, err := s.client.RangeQuery(
-		`sum by (namespace, container) (rate(vllm:generation_tokens_total[5m]))`,
+		`sum by (namespace, container) (rate(vllm:generation_tokens_total[5m]) + rate(vllm:prompt_tokens_total[5m]))`,
 		start, end, step,
 	)
 	if err != nil {
