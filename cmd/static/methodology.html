@@ -162,12 +162,12 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
   decode.
 </p>
 
-<h3>Opus-class frontier comparison — per-model physics estimate</h3>
+<h3>Commercial frontier comparison — per-model physics estimate</h3>
 <p>
   Rather than comparing against a fixed hypothetical workload, the dashboard computes
   a <strong>per-model, apples-to-apples power comparison</strong>: for each NRP model's
   actual observed token throughput (prompt and generation rates), what total power would
-  an Opus-class frontier model draw to serve the same tokens at the same rate?
+  a commercial frontier model draw to serve the same tokens at the same rate?
 </p>
 <div class="callout">
   <p><strong>Key principle:</strong> The comparison holds everything fixed except model
@@ -176,9 +176,9 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
   more hardware — and therefore more energy — to host and run.</p>
 </div>
 
-<h3>Opus-class model specification</h3>
+<h3>Commercial frontier model specification</h3>
 <p>
-  We model an Opus-class frontier LLM as a ~1.5 T parameter Mixture-of-Experts (MoE) with
+  We model a commercial frontier LLM as a ~1.5 T parameter Mixture-of-Experts (MoE) with
   ~300 B active parameters per token, served in FP8 on H100-80GB GPUs:
 </p>
 <table>
@@ -206,7 +206,7 @@ ratio = frontier_watts / nrp_measured_watts</code></pre>
 <p>
   This formula is applied to each NRP model using its <strong>actual observed</strong>
   prompt and generation token rates. The comparison is shown as a watts bar on each model
-  card and as a grouped bar chart across all models.
+  card and as a CO₂/token bar chart (colored by energy ratio) across all models.
 </p>
 
 <h3>Example: Qwen3.5-397B at low traffic</h3>
@@ -214,7 +214,7 @@ ratio = frontier_watts / nrp_measured_watts</code></pre>
 Prompt rate:       3 tok/s
 Generation rate:  15 tok/s
 
-Opus-class equivalent:
+Commercial frontier equivalent:
   Idle floor:    24 × 225 = 5,400 W
   Prefill:        3 × 0.5 =     2 W
   Decode:        15 × 6.0 =    90 W
@@ -224,7 +224,7 @@ Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</co
 
 <div class="callout">
   <p><strong>Why this is fair:</strong> Both sides include hosting costs. The NRP model
-  draws ~783 W to keep 8× A100 GPUs powered; the Opus-class would draw ~5,400 W just to
+  draws ~783 W to keep 8× A100 GPUs powered; the commercial frontier would draw ~5,400 W just to
   keep 24× H100 GPUs powered. At low traffic, both clusters are underutilized — the
   comparison reflects the real energy cost of maintaining each capability, not an idealized
   marginal-only estimate for one side.</p>
@@ -263,7 +263,7 @@ sum by (namespace, container) (
   <li>Nodes not matching hostname or namespace patterns fall back to the California (CAMX) average</li>
   <li>DCGM reports a single power reading per GPU; we cannot decompose energy into prefill vs
     decode phases on the NRP side</li>
-  <li>The Opus-class model spec is an informed estimate, not a known architecture; the
+  <li>The Commercial frontier model spec is an informed estimate, not a known architecture; the
     comparison is illustrative of the size/energy tradeoff, not a precise measurement
     of any specific commercial model</li>
   <li>Decode marginal energy (6 J/token) assumes low batch matching typical NRP traffic;
