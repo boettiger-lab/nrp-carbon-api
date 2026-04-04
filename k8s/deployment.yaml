@@ -19,6 +19,7 @@ spec:
       containers:
         - name: carbon-api
           image: ghcr.io/boettiger-lab/carbon-api:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
