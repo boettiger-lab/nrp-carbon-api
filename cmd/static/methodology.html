@@ -162,90 +162,84 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
   decode.
 </p>
 
-<h3>Commercial estimate baseline — physics-constrained envelope</h3>
+<h3>Opus-class frontier comparison — per-model physics estimate</h3>
 <p>
-  Commercial frontier LLMs (e.g., Claude, GPT-4, Gemini) do not disclose per-token
-  energy consumption. Rather than a single outdated point estimate, the dashboard
-  presents a <strong>physics-constrained energy envelope</strong> derived from hardware
-  modeling and observed workload patterns. No proprietary or undisclosed data is assumed.
+  Rather than comparing against a fixed hypothetical workload, the dashboard computes
+  a <strong>per-model, apples-to-apples power comparison</strong>: for each NRP model's
+  actual observed token throughput (prompt and generation rates), what total power would
+  an Opus-class frontier model draw to serve the same tokens at the same rate?
 </p>
 <div class="callout">
-  <p><strong>Transparency:</strong> These are inferred estimates, not direct measurements.
-  Commercial providers disclose no per-token energy data. The bounds below represent what
-  is physically achievable on H100-class infrastructure given known hardware specifications
-  and transformer scaling laws.</p>
+  <p><strong>Key principle:</strong> The comparison holds everything fixed except model
+  size. Same tokens, same traffic level. The only variable is the quality/size tradeoff:
+  a larger frontier model may produce higher-quality output, but requires substantially
+  more hardware — and therefore more energy — to host and run.</p>
 </div>
 
-<h3>Token-level energy bounds</h3>
-<table>
-  <tr><th>Phase</th><th>Lower bound</th><th>Mean estimate</th><th>Upper bound</th></tr>
-  <tr><td>Prefill (input tokens)</td><td>1 J/token</td><td>3 J/token</td><td>10 J/token</td></tr>
-  <tr><td>Decode (output tokens)</td><td>0.5 J/token</td><td>1.5 J/token</td><td>3 J/token</td></tr>
-</table>
+<h3>Opus-class model specification</h3>
 <p>
-  <strong>Lower bound:</strong> near-optimal batched serving on H100-class hardware.
-  <strong>Upper bound:</strong> frontier-scale model (1T+ parameter MoE), long-context
-  KV-cache overhead (context ≥ 40k tokens), low batch utilization.
-  At the US average grid intensity (0.394 kg CO₂/kWh, EPA eGRID 2022):
-  <strong>1 J ≈ 0.109 mg CO₂</strong>.
-</p>
-
-<h3>Workload presets</h3>
-<p>
-  The commercial estimate is reported per <em>user request</em>. Agentic systems (tool use,
-  retrieval, multi-step reasoning) make multiple hidden API calls per visible response.
-  Three presets are provided; <strong>Agentic (≥40k)</strong> is the default because 40k
-  input tokens is the observed lower baseline for client applications accessing NRP-hosted
-  models:
+  We model an Opus-class frontier LLM as a ~1.5 T parameter Mixture-of-Experts (MoE) with
+  ~300 B active parameters per token, served in FP8 on H100-80GB GPUs:
 </p>
 <table>
-  <tr><th>Preset</th><th>Input tokens</th><th>Output tokens</th><th>API calls (lo/mid/hi)</th><th>Use case</th></tr>
-  <tr><td>Simple query</td><td>100</td><td>100</td><td>1 / 1 / 1</td><td>Single chatbot turn</td></tr>
-  <tr><td>Long-context</td><td>10,000</td><td>500</td><td>1 / 1 / 1</td><td>Document analysis</td></tr>
-  <tr><td><strong>Agentic (≥40k)</strong></td><td>40,000</td><td>2,000</td><td>2 / 3 / 5</td><td>Agentic tool-use loop; NRP client-app baseline</td></tr>
+  <tr><th>Parameter</th><th>Value</th><th>Derivation</th></tr>
+  <tr><td>Total parameters</td><td>~1.5 T</td><td>Frontier MoE estimate (2026)</td></tr>
+  <tr><td>Active parameters/token</td><td>~300 B</td><td>Typical MoE activation ratio</td></tr>
+  <tr><td>Weight memory (FP8)</td><td>~1.5 TB</td><td>1 byte/param × 1.5 T params</td></tr>
+  <tr><td>Minimum GPUs</td><td>24× H100-80GB</td><td>1.92 TB total HBM for weights + KV cache + activations</td></tr>
+  <tr><td>Idle power</td><td>225 W/GPU × 24 = <strong>5,400 W</strong></td><td>H100 SXM measured idle</td></tr>
 </table>
 
-<h3>Example: agentic preset, mean estimate</h3>
-<pre><code>Prefill:  40,000 input tokens  × 3 J/token × 3 calls = 360,000 J
-Decode:    2,000 output tokens × 1.5 J/token × 3 calls =   9,000 J
-Total energy per user request:                           369,000 J
+<h3>Marginal token energy (above idle)</h3>
+<table>
+  <tr><th>Phase</th><th>Marginal energy</th><th>Derivation</th></tr>
+  <tr><td>Prefill (input tokens)</td><td>0.5 J/token</td><td>Compute-bound: 600 GFLOPS/token, 24× H100 at 60% util → 23,700 tok/s; additional power (700−225)×24 = 11,400 W → 0.48 J/tok</td></tr>
+  <tr><td>Decode (output tokens)</td><td>6 J/token</td><td>Memory-bandwidth-bound at low batch (B≈1–4, matching NRP traffic): must load 300 GB active weights per step; 80.4 TB/s → 270 tok/s; ~3,000 W additional → ~11 J at B=1, ~4 J at B=4</td></tr>
+</table>
 
-Total tokens processed:  (40,000 + 2,000) × 3 calls = 126,000 tokens
-Per token: 369,000 J ÷ 126,000 tokens ≈ 2.93 J/token
-CO₂: 2.93 J/token × 0.109 mg CO₂/J ≈ 0.32 mg CO₂/token
+<h3>Per-model comparison formula</h3>
+<pre><code>frontier_watts = 24 × 225                                   # idle floor: 5,400 W
+               + prompt_tokens_per_sec × 0.5                 # marginal prefill
+               + generation_tokens_per_sec × 6.0             # marginal decode
 
-Note: tool call count cancels — energy and total tokens both scale linearly,
-so per-token cost is independent of how many calls make up the request.</code></pre>
+ratio = frontier_watts / nrp_measured_watts</code></pre>
+<p>
+  This formula is applied to each NRP model using its <strong>actual observed</strong>
+  prompt and generation token rates. The comparison is shown as a watts bar on each model
+  card and as a grouped bar chart across all models.
+</p>
+
+<h3>Example: Qwen3.5-397B at low traffic</h3>
+<pre><code>NRP measured:    783 W  (8× A100, real DCGM reading)
+Prompt rate:       3 tok/s
+Generation rate:  15 tok/s
+
+Opus-class equivalent:
+  Idle floor:    24 × 225 = 5,400 W
+  Prefill:        3 × 0.5 =     2 W
+  Decode:        15 × 6.0 =    90 W
+  Total:                    5,492 W
+
+Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</code></pre>
 
 <div class="callout">
-  <p><strong>Comparison basis:</strong> NRP measurements cover <em>GPU power only</em>.
-  The commercial envelope covers <em>facility-level power</em> (GPU + CPU + DRAM + PUE
-  cooling overhead). Applying a typical 1.5–2× system-overhead correction to NRP
-  measurements would make the comparison more conservative. The current display therefore
-  understates the NRP advantage relative to a fully corrected comparison.</p>
+  <p><strong>Why this is fair:</strong> Both sides include hosting costs. The NRP model
+  draws ~783 W to keep 8× A100 GPUs powered; the Opus-class would draw ~5,400 W just to
+  keep 24× H100 GPUs powered. At low traffic, both clusters are underutilized — the
+  comparison reflects the real energy cost of maintaining each capability, not an idealized
+  marginal-only estimate for one side.</p>
+</div>
+<div class="callout">
+  <p><strong>What this doesn't measure:</strong> NRP figures are GPU power only (no CPU,
+  DRAM, PUE). Applying a typical 1.5–2× system-overhead correction to both sides would
+  preserve the ratio. Commercial cloud PUE (~1.1–1.3) vs. research facility PUE may
+  differ slightly but does not change the order-of-magnitude comparison.</p>
 </div>
 
-<h3>Energy per token and GPU utilization</h3>
 <p>
-  Each model card displays <strong>J/token</strong> (Joules per token) — the raw energy
-  efficiency of that GPU for its current workload:
-</p>
-<pre><code>J/token = GPU_power_watts / total_tokens_per_sec</code></pre>
-<p>
-  This is compared to the commercial mid estimate for the selected workload preset
-  (e.g., 2.9 J/token for the agentic preset). When a model's J/token exceeds the
-  commercial estimate, it usually indicates <strong>GPU underutilization</strong> — the
-  GPU is drawing significant idle or near-idle power while processing relatively few
-  tokens, inflating the per-token energy cost. This is not a reflection of model
-  inefficiency; it means the GPU is not being kept busy enough for the energy it consumes.
-</p>
-<p>
-  The card also displays the <strong>observed prompt token percentage</strong> — what
-  fraction of total tokens are input (prefill) vs output (decode). This allows users to
-  judge whether the model's actual workload mix resembles the selected commercial preset
-  (e.g., the agentic preset assumes 95% input tokens). When the ratios diverge
-  significantly, the blended CO₂/token comparison becomes less precise because prefill
-  and decode have different energy profiles.
+  Each card also displays the <strong>observed prompt token percentage</strong> — what
+  fraction of total tokens are input (prefill) vs output (decode), for transparency
+  about the workload driving the comparison.
 </p>
 
 <h3>Cumulative CO₂ and cluster CO₂/token (time-series view)</h3>
@@ -267,14 +261,14 @@ sum by (namespace, container) (
   <li>Datacenter PUE (Power Usage Effectiveness) is not applied (adds 10–50%)</li>
   <li>Carbon intensity values are annual averages; real-time grid mix varies hour-to-hour</li>
   <li>Nodes not matching hostname or namespace patterns fall back to the California (CAMX) average</li>
-  <li><strong>NRP CO₂/token is the real amortized cost including GPU standby power;</strong> the
-    commercial J/token estimates assume near-peak utilization. At low throughput, NRP's
-    per-token cost is inflated by idle power — this is honest carbon accounting (the GPU is
-    on regardless) but is a different quantity than the marginal cost of one additional token
-    on a fully loaded commercial cluster</li>
   <li>DCGM reports a single power reading per GPU; we cannot decompose energy into prefill vs
-    decode phases. The blended J/token depends on the workload mix, which is shown on each
-    card for transparency</li>
+    decode phases on the NRP side</li>
+  <li>The Opus-class model spec is an informed estimate, not a known architecture; the
+    comparison is illustrative of the size/energy tradeoff, not a precise measurement
+    of any specific commercial model</li>
+  <li>Decode marginal energy (6 J/token) assumes low batch matching typical NRP traffic;
+    commercial providers batching hundreds of concurrent requests achieve lower per-token
+    decode costs, but also require the same or greater hosting floor</li>
   <li>The eGRID intensity table in <code>internal/carbon/intensity.go</code> will be updated as new annual data is published</li>
 </ul>
 <p>

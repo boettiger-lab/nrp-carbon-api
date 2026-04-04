@@ -146,14 +146,9 @@
 
   <div class="chart-wrap">
     <div class="section-head">
-      <h2>CO₂ / token by model — active models vs. commercial estimate</h2>
-      <div class="range-tabs" id="workload-tabs">
-        <button class="range-tab" data-workload="simple">Simple</button>
-        <button class="range-tab" data-workload="longctx">Long-context</button>
-        <button class="range-tab active" data-workload="agentic">Agentic (40k)</button>
-      </div>
+      <h2>Power draw — NRP measured vs. Opus-class equivalent</h2>
     </div>
-    <div class="workload-note" id="workload-note"></div>
+    <div class="workload-note">For each model: NRP's real GPU power vs. the estimated power an Opus-class model (~1.5T MoE on 24× H100) would draw to process the same tokens at the same rate. Includes hosting floor (${(FRONTIER_IDLE_W/1000).toFixed(1)} kW idle) + marginal token energy. <a href="/methodology" style="color:var(--accent)">Methodology</a></div>
     <canvas id="barChart"></canvas>
   </div>
 
@@ -219,67 +214,47 @@ function initTheme() {
 }
 initTheme();
 
-// Physics-constrained energy envelope for frontier commercial LLMs (2026).
-// Commercial providers do not disclose per-token energy; bounds derived from
-// H100-class hardware specs, transformer scaling laws, and observed workload patterns.
-// Lower = near-optimal batched H100 serving; Upper = frontier-scale (1T+ MoE),
-// long-context KV-cache overhead, low batch utilization.
-// Sources: Delavande et al. (2025); Luccioni et al. (2024); hardware modeling.
-const PREFILL_J = { lo: 1.0, mid: 3.0, hi: 10.0 }; // Joules per input token
-const DECODE_J  = { lo: 0.5, mid: 1.5, hi:  3.0 }; // Joules per output token (short-context)
-const COMMERCIAL_GRID_KG_KWH = 0.394;               // US average grid (EPA eGRID 2022)
-const J_TO_MG_CO2 = COMMERCIAL_GRID_KG_KWH / 3.6e6 * 1e6; // 0.1094 mg CO₂/J
-
-// Workload presets. 40k input tokens is the observed NRP client-app baseline.
-// toolCalls{Lo,Mid,Hi}: total API calls per user request including hidden tool/agent calls.
-const WORKLOADS = {
-  simple:  { label: 'Simple query',   desc: '100 in / 100 out · 1 call',                   inputTokens:   100, outputTokens:  100, toolCallsLo: 1, toolCallsMid: 1, toolCallsHi: 1 },
-  longctx: { label: 'Long-context',   desc: '10k in / 500 out · 1 call',                   inputTokens: 10000, outputTokens:  500, toolCallsLo: 1, toolCallsMid: 1, toolCallsHi: 1 },
-  agentic: { label: 'Agentic (≥40k)', desc: '40k in / 2k out · 2–5 calls · NRP baseline',  inputTokens: 40000, outputTokens: 2000, toolCallsLo: 2, toolCallsMid: 3, toolCallsHi: 5 },
+// Opus-class frontier model: physics-based power estimate for apples-to-apples comparison.
+// For each NRP model we ask: "What would an Opus-class cluster draw to serve the same tokens?"
+// This includes the hosting floor (idle power to keep model in memory) + marginal per-token energy.
+//
+// Spec: ~1.5T MoE, ~300B active params, FP8 inference.
+// Hardware: 24× H100-80GB minimum (1.5 TB weights + KV cache + activations → need ≥1.92 TB HBM).
+//
+// Prefill (compute-bound): 2×300B = 600 GFLOPS/token. 24× H100 at 60% util = 14,200 TFLOPS.
+//   Throughput: ~23,700 tok/s. Marginal power above idle: (700−225)×24 = 11,400 W.
+//   → ~0.5 J/input-token marginal.
+//
+// Decode (memory-bandwidth-bound): must load 300 GB active weights per step.
+//   24× H100 at 3.35 TB/s = 80.4 TB/s → 270 tok/s per sequence.
+//   At low batch (B≈1–4, matching typical NRP traffic): ~100–150 W above idle per GPU.
+//   → ~6 J/output-token marginal.
+//
+// Sources: H100 specs (NVIDIA), transformer FLOPs scaling, Delavande et al. (2025).
+const FRONTIER = {
+  label: 'Opus-class',
+  desc: '~1.5T MoE, ~300B active · 24× H100-80GB',
+  numGPUs: 24,
+  idleWattsPerGPU: 225,
+  prefillJPerToken: 0.5,
+  decodeJPerToken: 6.0,
 };
-let currentWorkload = 'agentic';
+const FRONTIER_IDLE_W = FRONTIER.numGPUs * FRONTIER.idleWattsPerGPU; // 5400 W
 
-function computeCommercial(key) {
-  const w = WORKLOADS[key];
-  // Denominator is total tokens (input + output) per call — consistent with how
-  // NRP measures CO₂/token (total tokens processed by the GPU, not output-only).
-  // toolCalls cancel: energy and total tokens both scale linearly with call count.
-  const totalTokens = w.inputTokens + w.outputTokens;
-  return {
-    lo:  (w.inputTokens * PREFILL_J.lo  + w.outputTokens * DECODE_J.lo)  / totalTokens * J_TO_MG_CO2,
-    mid: (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) / totalTokens * J_TO_MG_CO2,
-    hi:  (w.inputTokens * PREFILL_J.hi  + w.outputTokens * DECODE_J.hi)  / totalTokens * J_TO_MG_CO2,
-  };
+function frontierWatts(promptTokPerSec, genTokPerSec) {
+  return FRONTIER_IDLE_W
+       + promptTokPerSec * FRONTIER.prefillJPerToken
+       + genTokPerSec    * FRONTIER.decodeJPerToken;
 }
 
-let commercial = computeCommercial(currentWorkload);
-let COMMERCIAL_MG_PER_TOKEN_LO  = commercial.lo;
-let COMMERCIAL_MG_PER_TOKEN_MID = commercial.mid;
-let COMMERCIAL_MG_PER_TOKEN_HI  = commercial.hi;
-
-// Commercial J/token (blended, for utilization context).
-function commercialJPerToken(key) {
-  const w = WORKLOADS[key];
-  return (w.inputTokens * PREFILL_J.mid + w.outputTokens * DECODE_J.mid) / (w.inputTokens + w.outputTokens);
-}
-let COMMERCIAL_J_PER_TOKEN = commercialJPerToken(currentWorkload);
-
-// Card border class based on CO₂/token ratio vs commercial estimate.
-// Prefer 24h avg for stability; fall back to current 5-min value.
-// orange = at the commercial (GPT) level; red = worse than commercial.
-// Minimum tokens/sec to treat CO₂/token as representative (matches backend).
-const MIN_THROUGHPUT_FOR_TOKEN_METRIC = 5.0;
-
-function tokenRatioClass(m) {
-  // Prefer 24h avg (already filtered to ≥5 tok/s periods); fall back to current
-  // only if current throughput is also high enough to be meaningful.
-  const v = m.co2_mg_per_token_avg_24h ||
-            (m.tokens_per_sec >= MIN_THROUGHPUT_FOR_TOKEN_METRIC ? m.co2_mg_per_token : null);
-  if (!v) return 'ratio-idle';
-  const r = v / COMMERCIAL_MG_PER_TOKEN_MID;
-  if (r < 0.5)  return 'ratio-great';
-  if (r < 0.8)  return 'ratio-good';
-  if (r < 1.0)  return 'ratio-warn';
+// Card border: energy ratio (NRP / Opus-class equivalent).
+function energyRatioClass(m) {
+  if (m.power_watts < 1) return 'ratio-idle';
+  const fw = frontierWatts(m.prompt_tokens_per_sec || 0, m.generation_tokens_per_sec || 0);
+  const r = m.power_watts / fw;
+  if (r < 0.15) return 'ratio-great';
+  if (r < 0.35) return 'ratio-good';
+  if (r < 0.70) return 'ratio-warn';
   return 'ratio-bad';
 }
 function intensityColor(kg){ return kg<=.25?'#22c55e':kg<=.40?'#eab308':kg<=.55?'#f97316':'#ef4444'; }
@@ -358,39 +333,22 @@ function render(data) {
     <div class="stat"><div class="stat-label">Avg Grid Intensity</div><div class="stat-value">${fmt(avgIntensity,3)}</div><div class="stat-unit">kg CO₂/kWh</div></div>
   `;
 
-  // Bar chart: all models with a known running avg.
-  // Primary bar = 7d avg (most stable; falls back to 24h avg then current if not yet accumulated).
-  // Floating dot = current 5-min value when throughput is ≥5 tok/s.
-  // Models never seen at meaningful throughput are shown as a dim "no data" bar.
-  const barModels = models.slice().sort((a,b) => {
-    const va = a.co2_mg_per_token_avg_7d || a.co2_mg_per_token_avg_24h || a.co2_mg_per_token || 0;
-    const vb = b.co2_mg_per_token_avg_7d || b.co2_mg_per_token_avg_24h || b.co2_mg_per_token || 0;
-    return va - vb;
+  // Bar chart: NRP measured watts vs Opus-class equivalent watts per model.
+  // Shows the size/energy tradeoff directly — how much more power a frontier model
+  // would need to serve the same tokens on the same traffic pattern.
+  const barModels = models.filter(m => m.power_watts > 0).slice().sort((a,b) => {
+    const ra = a.power_watts / frontierWatts(a.prompt_tokens_per_sec||0, a.generation_tokens_per_sec||0);
+    const rb = b.power_watts / frontierWatts(b.prompt_tokens_per_sec||0, b.generation_tokens_per_sec||0);
+    return ra - rb;
   });
-  const barLabels = barModels.map(m => shortModel(m.model_name) || m.container);
-  const avgVals   = barModels.map(m => m.co2_mg_per_token_avg_7d || m.co2_mg_per_token_avg_24h || null);
-  const nowVals   = barModels.map(m =>
-    m.tokens_per_sec >= MIN_THROUGHPUT_FOR_TOKEN_METRIC ? m.co2_mg_per_token : null
-  );
-  const avgColors = barModels.map(m => {
-    const v = m.co2_mg_per_token_avg_7d || m.co2_mg_per_token_avg_24h;
-    if (!v) return 'rgba(100,116,139,0.25)'; // no data — dim
-    const r = v / COMMERCIAL_MG_PER_TOKEN_MID;
-    return r < 0.8 ? 'rgba(34,197,94,0.75)' : r < 1.0 ? 'rgba(249,115,22,0.75)' : 'rgba(239,68,68,0.75)';
-  });
-  const nowColors = barModels.map(m => {
-    if (!m.co2_mg_per_token || m.tokens_per_sec < MIN_THROUGHPUT_FOR_TOKEN_METRIC) return 'transparent';
-    const r = m.co2_mg_per_token / COMMERCIAL_MG_PER_TOKEN_MID;
-    return r < 0.8 ? '#22c55e' : r < 1.0 ? '#f97316' : '#ef4444';
-  });
+  const barLabels  = barModels.map(m => shortModel(m.model_name) || m.container);
+  const nrpWatts   = barModels.map(m => Math.round(m.power_watts));
+  const opusWatts  = barModels.map(m => Math.round(frontierWatts(m.prompt_tokens_per_sec||0, m.generation_tokens_per_sec||0)));
 
   if (barChart) {
     barChart.data.labels = barLabels;
-    barChart.data.datasets[0].data = avgVals;
-    barChart.data.datasets[0].backgroundColor = avgColors;
-    barChart.data.datasets[1].data = nowVals;
-    barChart.data.datasets[1].backgroundColor = nowColors;
-    barChart.data.datasets[1].borderColor = nowColors;
+    barChart.data.datasets[0].data = nrpWatts;
+    barChart.data.datasets[1].data = opusWatts;
     barChart.update();
   } else {
     const cc0 = chartColors();
@@ -398,40 +356,30 @@ function render(data) {
       type: 'bar',
       data: { labels: barLabels, datasets: [
         {
-          label: '7-day avg mg CO₂/token',
-          data: avgVals,
-          backgroundColor: avgColors,
+          label: 'NRP measured (W)',
+          data: nrpWatts,
+          backgroundColor: 'rgba(34,197,94,0.75)',
           borderRadius: 4,
-          order: 2,
         },
         {
-          // Render current value as a floating dot/line using a scatter overlay
-          type: 'scatter',
-          label: 'current (5-min)',
-          data: nowVals.map((v, i) => v != null ? {x: barLabels[i], y: v} : null).filter(Boolean),
-          backgroundColor: nowColors.filter(c => c !== 'transparent'),
-          borderColor:     nowColors.filter(c => c !== 'transparent'),
-          pointRadius: 5,
-          pointStyle: 'rectRot',
-          order: 1,
+          label: `${FRONTIER.label} equivalent (W)`,
+          data: opusWatts,
+          backgroundColor: 'rgba(99,102,241,0.5)',
+          borderRadius: 4,
         },
       ]},
       options: {
         responsive: true,
         plugins: {
-          legend: { display: true, labels:{ color:cc0.legend, font:{size:10}, boxWidth:12,
-            filter: item => item.datasetIndex === 0 || nowVals.some(v => v != null) }
-          },
+          legend: { display: true, labels:{ color:cc0.legend, font:{size:10}, boxWidth:12 } },
           tooltip: { callbacks: {
-            label: c => c.datasetIndex === 0
-              ? ` ${c.dataset.label}: ${c.parsed.y != null ? c.parsed.y.toFixed(3) : '—'} mg/token`
-              : ` current: ${c.parsed.y.toFixed(3)} mg/token`
+            label: c => ` ${c.dataset.label}: ${c.parsed.y.toLocaleString()} W`
           }}
         },
         scales: {
           x: { ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid} },
           y: { ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid},
-               title:{display:true,text:'mg CO₂ / token',color:cc0.tick,font:{size:10}},
+               title:{display:true,text:'Watts',color:cc0.tick,font:{size:10}},
                beginAtZero:true }
         }
       }
@@ -441,68 +389,39 @@ function render(data) {
   // Model cards
   document.getElementById('cards').innerHTML = models.map(m=>{
     const active = m.tokens_per_sec > 0.1;
-    const ic  = tokenRatioClass(m);
+    const ic  = energyRatioClass(m);
     const cc  = co2Color(m.co2_grams_per_hour);
     const dot = intensityColor(m.carbon_intensity_kg_per_kwh);
     const institution = m.node ? m.node.split('.').slice(-3).join('.') : '—';
-    const jPerToken = active ? m.power_watts / m.tokens_per_sec : null;
     const promptPct = active && m.tokens_per_sec > 0 ? (m.prompt_tokens_per_sec / m.tokens_per_sec * 100) : null;
-    const jColor = jPerToken == null ? '' : jPerToken < COMMERCIAL_J_PER_TOKEN * 0.5 ? 'green' : jPerToken < COMMERCIAL_J_PER_TOKEN ? 'yellow' : jPerToken < COMMERCIAL_J_PER_TOKEN * 2 ? 'orange' : 'red';
 
-    // Build CO₂/token comparison section.
-    // Requires either a 24h avg (always filtered to ≥5 tok/s) or current throughput ≥5 tok/s.
-    // At low throughput the ratio is dominated by idle power, not model efficiency.
-    let tokenCmp = '';
-    const highThroughput = m.tokens_per_sec >= MIN_THROUGHPUT_FOR_TOKEN_METRIC;
-    const cmpVal = m.co2_mg_per_token_avg_24h ||
-                   (highThroughput ? m.co2_mg_per_token : null);
-    if (!cmpVal && m.tokens_per_sec > 0.1 && m.tokens_per_sec < MIN_THROUGHPUT_FOR_TOKEN_METRIC) {
-      // Low-throughput note: model is generating but too slowly to give a meaningful efficiency ratio.
-      tokenCmp = `<div style="margin-top:.65rem;padding-top:.65rem;border-top:1px solid var(--border);font-size:.68rem;color:var(--muted)">
-        CO₂/token not shown — total throughput too low (${fmt(m.tokens_per_sec,1)} tok/s in+out) to represent real efficiency.
-        Footprint: ${fmt(m.co2_grams_per_hour)} g CO₂/hr.</div>`;
-    }
-    if (cmpVal > 0) {
-      const v    = cmpVal;
-      const vNow = m.co2_mg_per_token;
-      const lo   = COMMERCIAL_MG_PER_TOKEN_LO;
-      const mid  = COMMERCIAL_MG_PER_TOKEN_MID;
-      const hi   = COMMERCIAL_MG_PER_TOKEN_HI;
-      // Scale: 0..max where max = highest of NRP or commercial hi, plus 10% headroom
-      const scale    = Math.max(v, vNow || 0, hi) * 1.1;
-      const nrpPct   = Math.min(v        / scale * 100, 100).toFixed(1);
-      const nowPct   = vNow ? Math.min(vNow / scale * 100, 100).toFixed(1) : null;
-      const loPct    = (lo  / scale * 100).toFixed(1);
-      const hiPct    = (hi  / scale * 100).toFixed(1);
-      const midPct   = (mid / scale * 100).toFixed(1);
-      const ratio    = v / mid;
-      const barColor = v < mid ? '#22c55e' : v < hi ? '#eab308' : '#f97316';
-      const ratioClass = v < mid ? 'better' : 'worse';
-      const ratioText  = v < mid
-        ? `${(mid/v).toFixed(1)}× less CO₂/token than commercial est.`
-        : `${ratio.toFixed(1)}× commercial est.`;
-      const avgLabel = m.co2_mg_per_token_avg_24h ? `24h avg: ${v.toFixed(3)}` : `now: ${v.toFixed(3)}`;
-      // Small tick for current 5-min value when it differs from 24h avg
-      const nowTick = nowPct && m.co2_mg_per_token_avg_24h
-        ? `<div style="position:absolute;top:-3px;width:2px;height:24px;background:rgba(255,255,255,0.35);border-radius:1px;left:${nowPct}%"></div>`
-        : '';
-      tokenCmp = `
+    // Watts comparison: NRP measured vs Opus-class equivalent for the same tokens.
+    const fw = frontierWatts(m.prompt_tokens_per_sec || 0, m.generation_tokens_per_sec || 0);
+    const nrpW = m.power_watts;
+    let wattsCmp = '';
+    if (nrpW > 0) {
+      const ratio = fw / nrpW;
+      const nrpPct = Math.min(nrpW / fw * 100, 100).toFixed(1);
+      const ratioText = ratio >= 1.05
+        ? `${ratio.toFixed(1)}× less energy than ${FRONTIER.label} for same tokens`
+        : ratio < 0.95
+          ? `${(1/ratio).toFixed(1)}× more energy than ${FRONTIER.label}`
+          : `≈ same energy as ${FRONTIER.label}`;
+      const ratioClass = ratio >= 1.05 ? 'better' : 'worse';
+      const fIdleW = FRONTIER_IDLE_W;
+      const fMargW = fw - fIdleW;
+      wattsCmp = `
         <div class="token-cmp">
-          <div class="token-cmp-label">CO₂ / token vs. commercial est. <span style="font-style:italic;opacity:.7">(inferred · ${WORKLOADS[currentWorkload].label})</span></div>
+          <div class="token-cmp-label">Power: NRP vs. ${FRONTIER.label} for same tokens</div>
           <div class="token-cmp-track">
-            <div class="token-cmp-band"  style="left:${loPct}%;width:${(hiPct-loPct).toFixed(1)}%"></div>
-            <div class="token-cmp-bar"   style="width:${nrpPct}%;background:${barColor}"></div>
-            <div class="token-cmp-tick"  style="left:${midPct}%"></div>
-            ${nowTick}
+            <div class="token-cmp-bar" style="width:${nrpPct}%;background:#22c55e;top:2px;height:14px;border-radius:2px"></div>
+            <div style="position:absolute;top:2px;left:0;width:100%;height:14px;border-radius:2px;background:rgba(99,102,241,0.18)"></div>
           </div>
           <div class="token-cmp-legend">
-            <span>${avgLabel} mg/token${m.co2_mg_per_token_avg_24h && vNow ? ` · now: ${vNow.toFixed(3)}` : ''}</span>
-            <span style="color:#6366f1">▏commercial est. ${mid.toFixed(1)} mg/token</span>
+            <span style="color:#22c55e">NRP: ${nrpW.toLocaleString(undefined,{maximumFractionDigits:0})} W</span>
+            <span style="color:#6366f1">${FRONTIER.label}: ${fw.toLocaleString(undefined,{maximumFractionDigits:0})} W <span style="opacity:.6">(${fIdleW.toLocaleString()} idle + ${fMargW.toLocaleString(undefined,{maximumFractionDigits:0})} marginal)</span></span>
           </div>
-          <div class="token-cmp-ratio ${ratioClass}">${ratioText}</div>${
-            jPerToken != null && jPerToken > COMMERCIAL_J_PER_TOKEN
-            ? `<div style="font-size:.65rem;color:var(--muted);margin-top:.3rem">Energy/token (${fmt(jPerToken,1)} J) exceeds commercial est. (${fmt(COMMERCIAL_J_PER_TOKEN,1)} J) — likely reflects GPU underutilization at current load, not model inefficiency.</div>`
-            : ''}
+          <div class="token-cmp-ratio ${ratioClass}">${ratioText}</div>
         </div>`;
     }
 
@@ -520,11 +439,11 @@ function render(data) {
         <div class="metric"><div class="metric-label">CO₂ / hr</div><div class="metric-value ${cc}">${fmt(m.co2_grams_per_hour)}</div><div class="metric-unit">grams</div></div>
         <div class="metric"><div class="metric-label">GPU Power</div><div class="metric-value">${fmt(m.power_watts)}</div><div class="metric-unit">watts</div></div>
         <div class="metric"><div class="metric-label">CO₂ / token</div><div class="metric-value">${m.co2_mg_per_token?fmt(m.co2_mg_per_token,3):'—'}</div><div class="metric-unit">mg · 5 min${m.co2_mg_per_token_avg_24h ? ` · <span style="color:var(--muted)">24h avg: ${fmt(m.co2_mg_per_token_avg_24h,3)}</span>` : ''}</div></div>
-        <div class="metric"><div class="metric-label">Energy / token</div><div class="metric-value ${jColor}">${jPerToken != null ? fmt(jPerToken,2) : '—'}</div><div class="metric-unit">J/token${jPerToken != null ? ` · est. ${fmt(COMMERCIAL_J_PER_TOKEN,1)} commercial` : ''}</div></div>
         <div class="metric"><div class="metric-label">Input tok/s</div><div class="metric-value">${active?fmt(m.prompt_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s prompt</div></div>
         <div class="metric"><div class="metric-label">Output tok/s</div><div class="metric-value">${active?fmt(m.generation_tokens_per_sec):'—'}</div><div class="metric-unit">tok/s generated</div></div>
+        <div class="metric"><div class="metric-label">${FRONTIER.label} equiv.</div><div class="metric-value">${fmt(fw/1000,1)}</div><div class="metric-unit">kW for same tokens</div></div>
       </div>
-      ${tokenCmp}
+      ${wattsCmp}
       <div class="grid-intensity">
         <div class="grid-intensity-header">
           <span class="grid-location">${locationLabel(m.node)}</span>
@@ -627,28 +546,6 @@ document.querySelectorAll('#time-range-tabs .range-tab').forEach(btn => {
     loadTimeSeries(currentRange);
   });
 });
-
-function setWorkload(key) {
-  currentWorkload = key;
-  const c = computeCommercial(key);
-  COMMERCIAL_MG_PER_TOKEN_LO  = c.lo;
-  COMMERCIAL_MG_PER_TOKEN_MID = c.mid;
-  COMMERCIAL_MG_PER_TOKEN_HI  = c.hi;
-  COMMERCIAL_J_PER_TOKEN = commercialJPerToken(key);
-  document.querySelectorAll('#workload-tabs .range-tab').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.workload === key);
-  });
-  const w = WORKLOADS[key];
-  document.getElementById('workload-note').textContent =
-    `Commercial estimate: ${w.desc} · range ${c.lo.toFixed(1)}–${c.hi.toFixed(1)} mg CO₂/token` +
-    ` (physics-constrained range — not directly measured; see Methodology)`;
-  if (lastData) render(lastData);
-}
-
-document.querySelectorAll('#workload-tabs .range-tab').forEach(btn => {
-  btn.addEventListener('click', () => setWorkload(btn.dataset.workload));
-});
-setWorkload('agentic');
 
 load();
 loadTimeSeries(currentRange);
