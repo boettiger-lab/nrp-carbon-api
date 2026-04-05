@@ -103,7 +103,7 @@ func GramsPerHour(powerWatts, intensityKgPerKWh float64) float64 {
 	return powerWatts * intensityKgPerKWh
 }
 
-// MgPerToken returns milligrams of CO2 per output token.
+// MgPerToken returns milligrams of CO2 per token (total: prompt + generation).
 //
 //	mg/token = (W / 3.6e6 kWh/s) × intensity kg/kWh × 1e6 mg/kg / (tokens/s)
 //	         = W × intensity × (1e6 / 3.6e6) / tokensPerSec
