@@ -297,8 +297,8 @@ function fmt(n,d=1){ return (n==null||isNaN(n))?'—':n.toFixed(d); }
 function shortModel(name){ if(!name)return null; const p=name.split('/'); return p[p.length-1]; }
 
 const BAR_NOTES = {
-  co2: 'Green bars: NRP measured CO₂/token (24h avg). Green ◆: current 5-min rate. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
-  joules: 'Energy per token (J/token = watts ÷ tokens/sec). Strips out grid location — purely how efficiently each model converts GPU power into tokens. Lower is better. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
+  co2: 'CO₂ per token (24h avg). Green ◆: current 5-min rate. Bar color: <span style="color:var(--green)">green</span> = low carbon per token, <span style="color:var(--red)">red</span> = high — reflects both energy efficiency and grid carbon intensity at the model\'s location. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
+  joules: 'Energy per token (J/token = watts ÷ tokens/sec), independent of grid location. Bar color: <span style="color:var(--green)">green</span> = efficient (high utilization, good tok/s per watt), <span style="color:var(--red)">red</span> = poor utilization (GPUs drawing power but producing few tokens). <a href="/methodology" style="color:var(--accent)">Methodology</a>',
 };
 const BAR_TITLES = { co2: 'CO₂ per token by model', joules: 'Energy efficiency by model (J/token)' };
 
@@ -316,10 +316,18 @@ function renderBarChart(models) {
     const labels = bm.map(m => shortModel(m.model_name) || m.container);
     const avg24h = bm.map(m => m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0);
     const current = bm.map(m => m.co2_mg_per_token || null);
+    const maxCo2 = Math.max(...avg24h, 0.001);
+    const co2Colors = avg24h.map(v => {
+      const t = Math.min(v / maxCo2, 1);
+      if (t < 0.25) return 'rgba(34,197,94,0.8)';
+      if (t < 0.50) return 'rgba(134,239,172,0.8)';
+      if (t < 0.75) return 'rgba(249,115,22,0.7)';
+      return 'rgba(239,68,68,0.7)';
+    });
     barChart = new Chart(document.getElementById('barChart'), {
       type: 'bar',
       data: { labels, datasets: [
-        { label:'CO₂/token 24h avg (mg)', data:avg24h, backgroundColor:'rgba(34,197,94,0.75)', borderRadius:4, order:2 },
+        { label:'CO₂/token 24h avg (mg)', data:avg24h, backgroundColor:co2Colors, borderRadius:4, order:2 },
         { label:'CO₂/token current (mg)', data:current, type:'scatter', pointStyle:'rectRot', pointRadius:7, backgroundColor:'rgba(34,197,94,0.9)', borderColor:'#fff', borderWidth:1, order:1 },
       ]},
       options: {
