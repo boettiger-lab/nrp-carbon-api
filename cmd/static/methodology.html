@@ -251,12 +251,11 @@ Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</co
   The dashboard presents the frontier comparison in two ways:
 </p>
 <ul style="color:#cbd5e1; padding-left:1.5rem; margin:0.5rem 0 1rem;">
-  <li><strong>CO₂/token bar chart:</strong> Green bars show the 24-hour average CO₂ per token
+  <li><strong>CO₂/token bar chart:</strong> Bars show the 24-hour average CO₂ per token
   (mg) for each active NRP model. Green diamond (◆) markers show the current 5-minute rate.
-  Red cross (✕) markers show what a commercial frontier model would emit <em>on the same
-  grid</em> — since grid intensity is identical on both sides, this is purely a model
-  size/energy comparison. The gap between the green bar and the red cross is the energy
-  savings.</li>
+  Bar color ranges from <span style="color:#22c55e">green</span> (low carbon per token) to
+  <span style="color:#ef4444">red</span> (high) — reflecting both energy efficiency and
+  grid carbon intensity at the model's location.</li>
   <li><strong>Model card "N× less energy" metric:</strong> Each model card shows how many
   times more power the commercial frontier would require to serve the same tokens
   (e.g. "7.0× less energy"). This is <code>frontier_watts / nrp_measured_watts</code>.</li>
@@ -281,7 +280,10 @@ Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</co
 <ul style="color:#cbd5e1; padding-left:1.5rem; margin:0.5rem 0 1rem;">
   <li><strong>Low traffic:</strong> GPU idle power dominates when few tokens are being processed</li>
   <li><strong>Oversized allocation:</strong> More GPUs than needed for the model's actual demand</li>
-  <li><strong>Model architecture:</strong> Some models require more compute per token than others</li>
+  <li><strong>Model architecture:</strong> Dense models activate all parameters on every token,
+  while Mixture-of-Experts (MoE) models route each token through a subset (~20%) of total
+  weights. A dense 31B model may therefore have higher J/token than a 397B MoE, because the
+  MoE only activates ~60B parameters per token</li>
 </ul>
 <div class="callout">
   <p><strong>Note:</strong> J/token only appears for models with &gt;5 tok/s total throughput.
