@@ -146,9 +146,13 @@
 
   <div class="chart-wrap">
     <div class="section-head">
-      <h2>CO₂ per token by model</h2>
+      <h2 id="bar-title">CO₂ per token by model</h2>
+      <div class="range-tabs" id="bar-mode-tabs">
+        <button class="range-tab active" data-mode="co2">CO₂ / token</button>
+        <button class="range-tab" data-mode="joules">J / token</button>
+      </div>
     </div>
-    <div class="workload-note">Green bars: NRP measured CO₂/token. Green ◆: current 5-min rate. Red ✕: what a commercial frontier model (~1.5T MoE on 24× H100) would emit on the <em>same grid</em>. <a href="/methodology" style="color:var(--accent)">Methodology</a></div>
+    <div class="workload-note" id="bar-note">Green bars: NRP measured CO₂/token. Green ◆: current 5-min rate. Red ✕: what a commercial frontier model (~1.5T MoE on 24× H100) would emit on the <em>same grid</em>. <a href="/methodology" style="color:var(--accent)">Methodology</a></div>
     <canvas id="barChart"></canvas>
   </div>
 
@@ -173,6 +177,7 @@ const TS_API = '/api/v1/carbon/timeseries';
 let barChart  = null;
 let lineChart = null;
 let currentRange = '7d';
+let barMode = 'co2';
 let lastData = null;
 
 function chartColors() {
@@ -291,6 +296,92 @@ function co2Color(gph){ return gph<100?'green':gph<300?'yellow':gph<600?'orange'
 function fmt(n,d=1){ return (n==null||isNaN(n))?'—':n.toFixed(d); }
 function shortModel(name){ if(!name)return null; const p=name.split('/'); return p[p.length-1]; }
 
+const BAR_NOTES = {
+  co2: 'Green bars: NRP measured CO₂/token. Green ◆: current 5-min rate. Red ✕: what a commercial frontier model (~1.5T MoE on 24× H100) would emit on the <em>same grid</em>. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
+  joules: 'Energy per token (J/token = watts ÷ tokens/sec). Strips out grid location — purely how efficiently each model converts GPU power into tokens. Lower is better. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
+};
+const BAR_TITLES = { co2: 'CO₂ per token by model', joules: 'Energy efficiency by model (J/token)' };
+
+function renderBarChart(models) {
+  if (barChart) { barChart.destroy(); barChart = null; }
+  document.getElementById('bar-title').textContent = BAR_TITLES[barMode];
+  document.getElementById('bar-note').innerHTML = BAR_NOTES[barMode];
+
+  const cc0 = chartColors();
+
+  if (barMode === 'co2') {
+    const bm = models.filter(m => m.co2_mg_per_token_avg_24h > 0 || m.co2_mg_per_token > 0).slice().sort((a,b) => {
+      return (a.co2_mg_per_token_avg_24h || a.co2_mg_per_token || 0) - (b.co2_mg_per_token_avg_24h || b.co2_mg_per_token || 0);
+    });
+    const labels = bm.map(m => shortModel(m.model_name) || m.container);
+    const avg24h = bm.map(m => m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0);
+    const current = bm.map(m => m.co2_mg_per_token || null);
+    const frontier = bm.map(m => {
+      const co2 = m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0;
+      if (co2 <= 0 || m.power_watts <= 0) return null;
+      const fw = frontierWatts(m.prompt_tokens_per_sec||0, m.generation_tokens_per_sec||0);
+      return +(co2 * fw / m.power_watts).toFixed(3);
+    });
+    barChart = new Chart(document.getElementById('barChart'), {
+      type: 'bar',
+      data: { labels, datasets: [
+        { label:'NRP CO₂/token 24h avg (mg)', data:avg24h, backgroundColor:'rgba(34,197,94,0.75)', borderRadius:4, order:3 },
+        { label:'NRP CO₂/token current (mg)', data:current, type:'scatter', pointStyle:'rectRot', pointRadius:7, backgroundColor:'rgba(34,197,94,0.9)', borderColor:'#fff', borderWidth:1, order:1 },
+        { label:'Commercial frontier (same grid)', data:frontier, type:'scatter', pointStyle:'crossRot', pointRadius:8, backgroundColor:'rgba(239,68,68,0.9)', borderColor:'rgba(239,68,68,0.9)', borderWidth:2, order:2 },
+      ]},
+      options: {
+        responsive:true,
+        plugins: {
+          legend:{ display:true, labels:{ color:cc0.legend, font:{size:10}, boxWidth:12, usePointStyle:true } },
+          tooltip:{ callbacks:{ label: c => ` ${c.dataset.label}: ${c.parsed.y != null ? c.parsed.y.toFixed(3) : '—'} mg` } }
+        },
+        scales: {
+          x:{ ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid} },
+          y:{ ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid}, title:{display:true,text:'mg CO₂ / token',color:cc0.tick,font:{size:10}}, beginAtZero:true }
+        }
+      }
+    });
+  } else {
+    // J/token mode: power_watts / total_tokens_per_sec
+    const bm = models.filter(m => m.tokens_per_sec > 5).slice().sort((a,b) => {
+      return (a.power_watts / a.tokens_per_sec) - (b.power_watts / b.tokens_per_sec);
+    });
+    const labels = bm.map(m => shortModel(m.model_name) || m.container);
+    const jPerToken = bm.map(m => +(m.power_watts / m.tokens_per_sec).toFixed(3));
+    // Color by efficiency: lower J/token = greener
+    const maxJ = Math.max(...jPerToken, 1);
+    const colors = jPerToken.map(j => {
+      const t = Math.min(j / maxJ, 1);
+      if (t < 0.25) return 'rgba(34,197,94,0.8)';
+      if (t < 0.50) return 'rgba(134,239,172,0.8)';
+      if (t < 0.75) return 'rgba(249,115,22,0.7)';
+      return 'rgba(239,68,68,0.7)';
+    });
+    // GPU type annotation for context
+    const gpuLabels = bm.map(m => `${m.gpu_count}× ${m.gpu_hardware||'?'}`);
+    barChart = new Chart(document.getElementById('barChart'), {
+      type: 'bar',
+      data: { labels, datasets: [
+        { label:'J / token', data:jPerToken, backgroundColor:colors, borderRadius:4 },
+      ]},
+      options: {
+        responsive:true,
+        plugins: {
+          legend:{ display:false },
+          tooltip:{ callbacks:{
+            title: (items) => { const i=items[0].dataIndex; return `${labels[i]} (${gpuLabels[i]})`; },
+            label: c => ` ${c.parsed.y.toFixed(3)} J/token  ·  ${bm[c.dataIndex].power_watts.toFixed(0)} W  ·  ${bm[c.dataIndex].tokens_per_sec.toFixed(0)} tok/s`
+          }}
+        },
+        scales: {
+          x:{ ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid} },
+          y:{ ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid}, title:{display:true,text:'Joules / token',color:cc0.tick,font:{size:10}}, beginAtZero:true }
+        }
+      }
+    });
+  }
+}
+
 async function load() {
   const st = document.getElementById('status');
   try {
@@ -333,83 +424,7 @@ function render(data) {
     <div class="stat"><div class="stat-label">Avg Grid Intensity</div><div class="stat-value">${fmt(avgIntensity,3)}</div><div class="stat-unit">kg CO₂/kWh</div></div>
   `;
 
-  // Bar chart: CO₂/token per model, colored by frontier energy ratio.
-  // Diamond scatter markers show instantaneous (5-min) CO₂/token.
-  const barModels = models.filter(m => m.co2_mg_per_token_avg_24h > 0 || m.co2_mg_per_token > 0).slice().sort((a,b) => {
-    const va = a.co2_mg_per_token_avg_24h || a.co2_mg_per_token || 0;
-    const vb = b.co2_mg_per_token_avg_24h || b.co2_mg_per_token || 0;
-    return va - vb;
-  });
-  const barLabels = barModels.map(m => shortModel(m.model_name) || m.container);
-  const barAvg24h = barModels.map(m => m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0);
-  const barCurrent = barModels.map(m => m.co2_mg_per_token || null);
-  // Frontier CO₂/token at same grid: frontier_watts × intensity / (tok/s × 3600) × 1000
-  // Same grid assumption means ratio = watts ratio, so: nrp_co2_per_token × (frontier_watts / nrp_watts)
-  const barFrontier = barModels.map(m => {
-    const co2 = m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0;
-    if (co2 <= 0 || m.power_watts <= 0) return null;
-    const fw = frontierWatts(m.prompt_tokens_per_sec||0, m.generation_tokens_per_sec||0);
-    return +(co2 * fw / m.power_watts).toFixed(3);
-  });
-
-  if (barChart) {
-    barChart.data.labels = barLabels;
-    barChart.data.datasets[0].data = barAvg24h;
-    barChart.data.datasets[1].data = barCurrent;
-    barChart.data.datasets[2].data = barFrontier;
-    barChart.update();
-  } else {
-    const cc0 = chartColors();
-    barChart = new Chart(document.getElementById('barChart'), {
-      type: 'bar',
-      data: { labels: barLabels, datasets: [
-        {
-          label: 'NRP CO₂/token 24h avg (mg)',
-          data: barAvg24h,
-          backgroundColor: 'rgba(34,197,94,0.75)',
-          borderRadius: 4,
-          order: 3,
-        },
-        {
-          label: 'NRP CO₂/token current (mg)',
-          data: barCurrent,
-          type: 'scatter',
-          pointStyle: 'rectRot',
-          pointRadius: 7,
-          backgroundColor: 'rgba(34,197,94,0.9)',
-          borderColor: '#fff',
-          borderWidth: 1,
-          order: 1,
-        },
-        {
-          label: 'Commercial frontier (same grid)',
-          data: barFrontier,
-          type: 'scatter',
-          pointStyle: 'crossRot',
-          pointRadius: 8,
-          backgroundColor: 'rgba(239,68,68,0.9)',
-          borderColor: 'rgba(239,68,68,0.9)',
-          borderWidth: 2,
-          order: 2,
-        },
-      ]},
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: true, labels:{ color:cc0.legend, font:{size:10}, boxWidth:12, usePointStyle:true } },
-          tooltip: { callbacks: {
-            label: c => ` ${c.dataset.label}: ${c.parsed.y != null ? c.parsed.y.toFixed(3) : '—'} mg`
-          }}
-        },
-        scales: {
-          x: { ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid} },
-          y: { ticks:{color:cc0.tick,font:{size:10}}, grid:{color:cc0.grid},
-               title:{display:true,text:'mg CO₂ / token',color:cc0.tick,font:{size:10}},
-               beginAtZero:true }
-        }
-      }
-    });
-  }
+  renderBarChart(models);
 
   // Model cards
   document.getElementById('cards').innerHTML = models.map(m=>{
@@ -569,6 +584,15 @@ document.querySelectorAll('#time-range-tabs .range-tab').forEach(btn => {
     currentRange = btn.dataset.range;
     if (lineChart) { lineChart.destroy(); lineChart = null; }
     loadTimeSeries(currentRange);
+  });
+});
+
+document.querySelectorAll('#bar-mode-tabs .range-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#bar-mode-tabs .range-tab').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    barMode = btn.dataset.mode;
+    if (lastData) renderBarChart(lastData.models || []);
   });
 });
 
