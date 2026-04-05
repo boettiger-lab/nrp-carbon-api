@@ -297,7 +297,7 @@ function fmt(n,d=1){ return (n==null||isNaN(n))?'—':n.toFixed(d); }
 function shortModel(name){ if(!name)return null; const p=name.split('/'); return p[p.length-1]; }
 
 const BAR_NOTES = {
-  co2: 'Green bars: NRP measured CO₂/token. Green ◆: current 5-min rate. Red ✕: what a commercial frontier model (~1.5T MoE on 24× H100) would emit on the <em>same grid</em>. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
+  co2: 'Green bars: NRP measured CO₂/token (24h avg). Green ◆: current 5-min rate. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
   joules: 'Energy per token (J/token = watts ÷ tokens/sec). Strips out grid location — purely how efficiently each model converts GPU power into tokens. Lower is better. <a href="/methodology" style="color:var(--accent)">Methodology</a>',
 };
 const BAR_TITLES = { co2: 'CO₂ per token by model', joules: 'Energy efficiency by model (J/token)' };
@@ -316,18 +316,11 @@ function renderBarChart(models) {
     const labels = bm.map(m => shortModel(m.model_name) || m.container);
     const avg24h = bm.map(m => m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0);
     const current = bm.map(m => m.co2_mg_per_token || null);
-    const frontier = bm.map(m => {
-      const co2 = m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0;
-      if (co2 <= 0 || m.power_watts <= 0) return null;
-      const fw = frontierWatts(m.prompt_tokens_per_sec||0, m.generation_tokens_per_sec||0);
-      return +(co2 * fw / m.power_watts).toFixed(3);
-    });
     barChart = new Chart(document.getElementById('barChart'), {
       type: 'bar',
       data: { labels, datasets: [
-        { label:'NRP CO₂/token 24h avg (mg)', data:avg24h, backgroundColor:'rgba(34,197,94,0.75)', borderRadius:4, order:3 },
-        { label:'NRP CO₂/token current (mg)', data:current, type:'scatter', pointStyle:'rectRot', pointRadius:7, backgroundColor:'rgba(34,197,94,0.9)', borderColor:'#fff', borderWidth:1, order:1 },
-        { label:'Commercial frontier (same grid)', data:frontier, type:'scatter', pointStyle:'crossRot', pointRadius:8, backgroundColor:'rgba(239,68,68,0.9)', borderColor:'rgba(239,68,68,0.9)', borderWidth:2, order:2 },
+        { label:'CO₂/token 24h avg (mg)', data:avg24h, backgroundColor:'rgba(34,197,94,0.75)', borderRadius:4, order:2 },
+        { label:'CO₂/token current (mg)', data:current, type:'scatter', pointStyle:'rectRot', pointRadius:7, backgroundColor:'rgba(34,197,94,0.9)', borderColor:'#fff', borderWidth:1, order:1 },
       ]},
       options: {
         responsive:true,
