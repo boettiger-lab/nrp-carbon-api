@@ -172,9 +172,12 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
 </p>
 <div class="callout">
   <p><strong>Key principle:</strong> The comparison holds everything fixed except model
-  size. Same tokens, same traffic level. The only variable is the quality/size tradeoff:
-  a larger frontier model may produce higher-quality output, but requires substantially
-  more hardware — and therefore more energy — to host and run.</p>
+  size — same tokens, same traffic level, <strong>same grid</strong>. The frontier model's
+  CO₂/token is computed using the same grid carbon intensity as the NRP model it's compared
+  against. This isolates the model size/energy tradeoff: a larger frontier model may produce
+  higher-quality output, but requires substantially more hardware — and therefore more
+  energy — to host and run. Because grid intensity is the same on both sides, the CO₂ ratio
+  equals the watts ratio.</p>
 </div>
 
 <h3>Commercial frontier model specification</h3>
@@ -248,11 +251,12 @@ Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</co
   The dashboard presents the frontier comparison in two ways:
 </p>
 <ul style="color:#cbd5e1; padding-left:1.5rem; margin:0.5rem 0 1rem;">
-  <li><strong>CO₂/token bar chart:</strong> Each bar shows the 24-hour average CO₂ per token
-  (mg) for an active NRP model. Bar color reflects the energy ratio vs. the commercial
-  frontier estimate — green means significantly less energy, orange/red means approaching
-  or exceeding it. Diamond (◆) scatter markers overlay the current 5-minute CO₂/token
-  rate for each model.</li>
+  <li><strong>CO₂/token bar chart:</strong> Green bars show the 24-hour average CO₂ per token
+  (mg) for each active NRP model. Green diamond (◆) markers show the current 5-minute rate.
+  Red cross (✕) markers show what a commercial frontier model would emit <em>on the same
+  grid</em> — since grid intensity is identical on both sides, this is purely a model
+  size/energy comparison. The gap between the green bar and the red cross is the energy
+  savings.</li>
   <li><strong>Model card "N× less energy" metric:</strong> Each model card shows how many
   times more power the commercial frontier would require to serve the same tokens
   (e.g. "7.0× less energy"). This is <code>frontier_watts / nrp_measured_watts</code>.</li>

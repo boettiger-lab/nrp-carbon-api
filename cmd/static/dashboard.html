@@ -148,7 +148,7 @@
     <div class="section-head">
       <h2>CO₂ per token by model</h2>
     </div>
-    <div class="workload-note">Bar color reflects energy ratio vs. a commercial frontier model (~1.5T MoE on 24× H100). Green = significantly less energy; red = more. Diamond ◆ markers show current 5-min rate. <a href="/methodology" style="color:var(--accent)">Methodology</a></div>
+    <div class="workload-note">Green bars: NRP measured CO₂/token. Green ◆: current 5-min rate. Red ✕: what a commercial frontier model (~1.5T MoE on 24× H100) would emit on the <em>same grid</em>. <a href="/methodology" style="color:var(--accent)">Methodology</a></div>
     <canvas id="barChart"></canvas>
   </div>
 
@@ -343,22 +343,20 @@ function render(data) {
   const barLabels = barModels.map(m => shortModel(m.model_name) || m.container);
   const barAvg24h = barModels.map(m => m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0);
   const barCurrent = barModels.map(m => m.co2_mg_per_token || null);
-  // Color each bar by energy ratio vs frontier
-  function ratioBarColor(m) {
+  // Frontier CO₂/token at same grid: frontier_watts × intensity / (tok/s × 3600) × 1000
+  // Same grid assumption means ratio = watts ratio, so: nrp_co2_per_token × (frontier_watts / nrp_watts)
+  const barFrontier = barModels.map(m => {
+    const co2 = m.co2_mg_per_token_avg_24h || m.co2_mg_per_token || 0;
+    if (co2 <= 0 || m.power_watts <= 0) return null;
     const fw = frontierWatts(m.prompt_tokens_per_sec||0, m.generation_tokens_per_sec||0);
-    const r = m.power_watts / fw;
-    if (r < 0.15) return 'rgba(34,197,94,0.8)';   // green — great
-    if (r < 0.35) return 'rgba(134,239,172,0.8)';  // light green — good
-    if (r < 0.70) return 'rgba(249,115,22,0.7)';   // orange — caution
-    return 'rgba(239,68,68,0.7)';                   // red — worse
-  }
-  const barColors = barModels.map(ratioBarColor);
+    return +(co2 * fw / m.power_watts).toFixed(3);
+  });
 
   if (barChart) {
     barChart.data.labels = barLabels;
     barChart.data.datasets[0].data = barAvg24h;
-    barChart.data.datasets[0].backgroundColor = barColors;
     barChart.data.datasets[1].data = barCurrent;
+    barChart.data.datasets[2].data = barFrontier;
     barChart.update();
   } else {
     const cc0 = chartColors();
@@ -366,22 +364,33 @@ function render(data) {
       type: 'bar',
       data: { labels: barLabels, datasets: [
         {
-          label: 'CO₂/token 24h avg (mg)',
+          label: 'NRP CO₂/token 24h avg (mg)',
           data: barAvg24h,
-          backgroundColor: barColors,
+          backgroundColor: 'rgba(34,197,94,0.75)',
           borderRadius: 4,
-          order: 2,
+          order: 3,
         },
         {
-          label: 'CO₂/token current (mg)',
+          label: 'NRP CO₂/token current (mg)',
           data: barCurrent,
           type: 'scatter',
           pointStyle: 'rectRot',
           pointRadius: 7,
-          backgroundColor: 'rgba(99,102,241,0.9)',
+          backgroundColor: 'rgba(34,197,94,0.9)',
           borderColor: '#fff',
           borderWidth: 1,
           order: 1,
+        },
+        {
+          label: 'Commercial frontier (same grid)',
+          data: barFrontier,
+          type: 'scatter',
+          pointStyle: 'crossRot',
+          pointRadius: 8,
+          backgroundColor: 'rgba(239,68,68,0.9)',
+          borderColor: 'rgba(239,68,68,0.9)',
+          borderWidth: 2,
+          order: 2,
         },
       ]},
       options: {
