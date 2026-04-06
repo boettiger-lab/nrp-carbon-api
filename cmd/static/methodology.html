@@ -105,8 +105,16 @@ sum by (namespace, container, model_name) (
 <div class="callout">
   <p><strong>Why this matters for agentic AI:</strong> In agentic workloads, a single
   user-visible response may involve tens of thousands of input tokens across multiple
-  hidden tool calls — input tokens can account for 90–95% of all tokens processed.
-  If CO₂/token were computed over output tokens only, it would overstate the per-token cost
+  hidden tool calls. Empirical studies confirm this dramatically. A 2025 measurement study
+  (<a href="https://arxiv.org/abs/2506.04301" target="_blank">arXiv:2506.04301</a>) found
+  that agentic reasoning frameworks (Reflexion, LATS) consume <strong>62–137× more energy</strong>
+  per task than single-turn queries. A tokenomics study of multi-agent software engineering
+  (<a href="https://arxiv.org/abs/2601.14470" target="_blank">arXiv:2601.14470</a>) found
+  that 53.9% of all tokens processed are input (prefill) tokens, with an
+  input-to-output ratio of roughly 2:1. Real-world API data (OpenRouter, 2025) shows that
+  programming prompts — the dominant agentic use case — routinely exceed 20,000 input tokens
+  and grew ~4× in average length from early 2024 to late 2025.</p>
+  <p>If CO₂/token were computed over output tokens only, it would overstate the per-token cost
   by 10–20×. The dashboard uses <em>total tokens</em> (input + output) as the denominator, so
   reported CO₂/token reflects the full energy cost amortized across every token the GPU
   processed.</p>
@@ -183,7 +191,20 @@ CO₂_mg/token = P_watts × intensity_kg/kWh × (1e6 mg/kg) / (3.6e6 J/kWh) / to
 <h3>Commercial frontier model specification</h3>
 <p>
   We model a commercial frontier LLM as a ~1.5 T parameter Mixture-of-Experts (MoE) with
-  ~300 B active parameters per token, served in FP8 on H100-80GB GPUs:
+  ~300 B active parameters per token, served in FP8 on H100-80GB GPUs. This is an
+  informed estimate, not a known architecture — commercial providers (OpenAI, Anthropic,
+  Google) do not publicly disclose hardware configurations or per-query power measurements.
+  The closest available ground truth is Google's measured production figure of
+  <strong>0.24 Wh per median Gemini prompt</strong>
+  (<a href="https://arxiv.org/abs/2508.15734" target="_blank">arXiv:2508.15734</a>, August 2025),
+  covering accelerators, CPU, DRAM, and datacenter overhead. An independent bottom-up analysis
+  estimates a median of <strong>0.34 Wh per query</strong> (IQR: 0.18–0.67 Wh) for models
+  exceeding 200 B parameters on H100 hardware
+  (<a href="https://arxiv.org/abs/2509.20241" target="_blank">arXiv:2509.20241</a>).
+  Our physics-based idle floor of ~5,400 W for 24× H100 GPUs is consistent with these
+  per-query figures at realistic throughput: at 50 tok/s total and 0.34 Wh/query (~700 tokens),
+  the implied power draw is ~87 W above the idle floor, broadly consistent with our
+  marginal energy estimates below.
 </p>
 <table>
   <tr><th>Parameter</th><th>Value</th><th>Derivation</th></tr>
@@ -314,12 +335,17 @@ sum by (namespace, container) (
   <li>Nodes not matching hostname or namespace patterns fall back to the California (CAMX) average</li>
   <li>DCGM reports a single power reading per GPU; we cannot decompose energy into prefill vs
     decode phases on the NRP side</li>
-  <li>The Commercial frontier model spec is an informed estimate, not a known architecture; the
-    comparison is illustrative of the size/energy tradeoff, not a precise measurement
-    of any specific commercial model</li>
+  <li>The commercial frontier model spec is an informed estimate, not a known architecture.
+    No empirical per-token energy measurement exists for GPT-4, Claude 3/3.5/3.7, or Gemini 1.5/2.
+    The closest empirical anchor is Google's production measurement of 0.24 Wh/prompt for Gemini
+    Apps (arXiv:2508.15734). Our physics-based estimate is broadly consistent with this and with
+    independent bottom-up estimates (0.34 Wh median, arXiv:2509.20241)</li>
   <li>Decode marginal energy (6 J/token) assumes low batch matching typical NRP traffic;
     commercial providers batching hundreds of concurrent requests achieve lower per-token
     decode costs, but also require the same or greater hosting floor</li>
+  <li>Agentic energy amplification is highly framework-dependent: measured research-grade
+    frameworks show 62–137× energy vs single-turn (arXiv:2506.04301); production systems
+    are likely lower but remain poorly characterized in the literature</li>
   <li>The eGRID intensity table in <code>internal/carbon/intensity.go</code> will be updated as new annual data is published</li>
 </ul>
 <p>
@@ -363,6 +389,46 @@ sum by (namespace, container) (
   <tr>
     <td><a href="https://github.com/mlco2/codecarbon" target="_blank">Lottick et al. — CodeCarbon project.</a></td>
     <td>Open-source framework for tracking ML carbon emissions; inspiration for this work</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2310.03003" target="_blank">Samsi et al. (2023). <em>From Words to Watts.</em> arXiv.</a></td>
+    <td>Foundational empirical measurement of LLM inference energy on A100/V100; LLaMA-65B: 3–4 J/output token</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2512.03024" target="_blank">TokenPowerBench (2025). arXiv:2512.03024.</a></td>
+    <td>Comprehensive H100 benchmark of LLM inference power; MoE models ~2–3× more energy-efficient per token than dense equivalents</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2508.15734" target="_blank">Google (2025). <em>Measuring the environmental impact of delivering AI at Google Scale.</em> arXiv.</a></td>
+    <td>Only production-measured energy figure for a frontier commercial model: <strong>0.24 Wh median per Gemini prompt</strong> (August 2025); 33× efficiency gain year-over-year</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2509.20241" target="_blank">Luccioni et al. (2025). <em>Energy Use of AI Inference: Efficiency Pathways and Test-Time Compute.</em> arXiv.</a></td>
+    <td>Best bottom-up estimate for frontier &gt;200B models: <strong>0.34 Wh/query median</strong> (IQR: 0.18–0.67); agentic 15× token multiplier → ~13× energy increase</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2506.04301" target="_blank"><em>The Cost of Dynamic Reasoning.</em> (2025). arXiv.</a></td>
+    <td>Empirical measurement of agentic AI energy: Reflexion/LATS workflows consume <strong>62–137× more energy</strong> than single-turn baseline on same model</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2601.14470" target="_blank">Tokenomics (2026). arXiv.</a></td>
+    <td>Empirical tokenomics of multi-agent software engineering: 53.9% input tokens, ~2:1 input:output ratio; code review consumes 59% of all tokens</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2511.05597" target="_blank"><em>From Prompts to Power.</em> (2025). arXiv.</a></td>
+    <td>32,500 empirical measurements; confirms decode phase dominates energy (~96–97% of total); output tokens 10–30× more expensive per token than input</td>
+  </tr>
+  <tr>
+    <td><a href="https://arxiv.org/abs/2505.09598" target="_blank"><em>How Hungry is AI?</em> (2025). arXiv.</a></td>
+    <td>GPT-4o estimates via API timing + hardware modeling: 0.42 Wh (short query) to 2.9 Wh (long query); cross-model comparison framework</td>
+  </tr>
+  <tr>
+    <td><a href="https://epoch.ai/gradient-updates/how-much-energy-does-chatgpt-use" target="_blank">Epoch AI (2024). <em>How much energy does ChatGPT use?</em></a></td>
+    <td>Transparent bottom-up estimate for GPT-4o: ~0.3 Wh per typical query; based on leaked architecture specs and H100 TDP modeling</td>
+  </tr>
+  <tr>
+    <td><a href="https://openrouter.ai/state-of-ai" target="_blank">a16z / OpenRouter (2025). <em>State of AI: 100T Token Study.</em></a></td>
+    <td>Empirical API traffic data: prompt lengths grew ~4× (2024–2025); programming prompts routinely exceed 20,000 input tokens; agentic use dominates growth</td>
   </tr>
 </table>
 
