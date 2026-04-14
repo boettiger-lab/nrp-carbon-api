@@ -42,14 +42,22 @@ type dataPoint struct {
 	V float64
 }
 
-type modelHistory struct {
-	PowerWatts   []dataPoint
-	CO2GramsPerHour []dataPoint
-	CO2MgPerToken   []dataPoint
-	TokensPerSec    []dataPoint // aligned with CO2MgPerToken for weighted averaging
+// avgBucket holds one hour of token-weighted CO₂/token aggregates.
+type avgBucket struct {
+	Hour        int64   // Unix timestamp truncated to hour
+	WeightedSum float64 // Σ(co2_per_token_i × tokens_per_sec_i) over this hour
+	TokenSum    float64 // Σ(tokens_per_sec_i) over this hour
 }
 
-const maxHistory = 20160 // 7 days at 1-minute resolution (scrapeInterval=30s → 2 per min)
+const maxBuckets = 168  // 7 days of hourly buckets
+const maxHistory = 20160 // 7 days at 30s scrape intervals (for Series endpoint ring buffers)
+
+type modelHistory struct {
+	PowerWatts      []dataPoint // ring buffer for Series endpoint
+	CO2GramsPerHour []dataPoint // ring buffer for Series endpoint
+	CO2MgPerToken   []dataPoint // ring buffer for Series endpoint
+	AvgBuckets      []avgBucket // hourly aggregates for token-weighted averaging
+}
 
 func (h *modelHistory) append(now time.Time, m *ModelMetrics) {
 	push := func(buf *[]dataPoint, v float64) {
@@ -62,7 +70,27 @@ func (h *modelHistory) append(now time.Time, m *ModelMetrics) {
 	push(&h.CO2GramsPerHour, m.CO2GramsPerHour)
 	if m.CO2MgPerToken > 0 {
 		push(&h.CO2MgPerToken, m.CO2MgPerToken)
-		push(&h.TokensPerSec, m.TokensPerSec)
+		h.addBucket(now, m.CO2MgPerToken, m.TokensPerSec)
+	}
+}
+
+// addBucket accumulates a CO₂/token sample into the hourly aggregate bucket.
+func (h *modelHistory) addBucket(t time.Time, co2PerToken, tokensPerSec float64) {
+	hourKey := t.Truncate(time.Hour).Unix()
+	for i := len(h.AvgBuckets) - 1; i >= 0; i-- {
+		if h.AvgBuckets[i].Hour == hourKey {
+			h.AvgBuckets[i].WeightedSum += co2PerToken * tokensPerSec
+			h.AvgBuckets[i].TokenSum += tokensPerSec
+			return
+		}
+	}
+	h.AvgBuckets = append(h.AvgBuckets, avgBucket{
+		Hour:        hourKey,
+		WeightedSum: co2PerToken * tokensPerSec,
+		TokenSum:    tokensPerSec,
+	})
+	if len(h.AvgBuckets) > maxBuckets {
+		h.AvgBuckets = h.AvgBuckets[len(h.AvgBuckets)-maxBuckets:]
 	}
 }
 
@@ -87,12 +115,103 @@ func New(promURL string, interval time.Duration) *Scraper {
 
 // Run starts the background scrape loop. Call in a goroutine.
 func (s *Scraper) Run() {
-	s.scrape()
+	s.scrape()   // first scrape populates models with current intensities
+	s.backfill() // seed hourly buckets from Prometheus history
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 	for range t.C {
 		s.scrape()
 	}
+}
+
+// backfill queries Prometheus for 7 days of historical power and token data
+// and seeds the hourly average buckets so that 24h/7d averages are immediately
+// correct after a restart, rather than starting from zero.
+func (s *Scraper) backfill() {
+	log.Println("scraper: backfilling 7-day averages from Prometheus...")
+	end := time.Now()
+	start := end.Add(-7 * 24 * time.Hour)
+	step := 5 * time.Minute
+
+	powerSeries, err := s.client.RangeQuery(
+		`sum by (namespace, container) (DCGM_FI_DEV_POWER_USAGE{namespace=~"nrp-llm|sdsc-llm"})`,
+		start, end, step,
+	)
+	if err != nil {
+		log.Printf("scraper: backfill power query failed: %v", err)
+		return
+	}
+	tokenSeries, err := s.client.RangeQuery(
+		`sum by (namespace, container) (rate(vllm:generation_tokens_total[5m]) + rate(vllm:prompt_tokens_total[5m]))`,
+		start, end, step,
+	)
+	if err != nil {
+		log.Printf("scraper: backfill token query failed: %v", err)
+		return
+	}
+
+	// Join power and token data by (key, timestamp).
+	type sample struct{ power, tokens float64 }
+	byKeyTime := make(map[string]map[int64]*sample)
+
+	for _, sr := range powerSeries {
+		key := sr.Metric["namespace"] + "/" + sr.Metric["container"]
+		if byKeyTime[key] == nil {
+			byKeyTime[key] = make(map[int64]*sample)
+		}
+		for _, pt := range sr.Points {
+			ts := pt.Time.Unix()
+			if byKeyTime[key][ts] == nil {
+				byKeyTime[key][ts] = &sample{}
+			}
+			byKeyTime[key][ts].power += pt.Value
+		}
+	}
+	for _, sr := range tokenSeries {
+		key := sr.Metric["namespace"] + "/" + sr.Metric["container"]
+		if byKeyTime[key] == nil {
+			byKeyTime[key] = make(map[int64]*sample)
+		}
+		for _, pt := range sr.Points {
+			ts := pt.Time.Unix()
+			if byKeyTime[key][ts] == nil {
+				byKeyTime[key][ts] = &sample{}
+			}
+			byKeyTime[key][ts].tokens += pt.Value
+		}
+	}
+
+	// Use current carbon intensities from the first live scrape.
+	s.mu.RLock()
+	intensityByKey := make(map[string]float64, len(s.models))
+	for key, m := range s.models {
+		intensityByKey[key] = m.CarbonIntensity
+	}
+	s.mu.RUnlock()
+
+	// Populate hourly average buckets.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, timestamps := range byKeyTime {
+		intensity := intensityByKey[key]
+		if intensity == 0 {
+			intensity = carbon.NRPDefault
+		}
+		if s.history[key] == nil {
+			s.history[key] = &modelHistory{}
+		}
+		h := s.history[key]
+		for ts, samp := range timestamps {
+			if samp.tokens <= 5.0 || samp.power <= 0 {
+				continue
+			}
+			co2PerToken := carbon.MgPerToken(samp.power, intensity, samp.tokens)
+			h.addBucket(time.Unix(ts, 0), co2PerToken, samp.tokens)
+		}
+	}
+
+	log.Printf("scraper: backfilled %d model(s) from Prometheus", len(byKeyTime))
 }
 
 // Models returns a snapshot of all current model metrics.
@@ -226,30 +345,27 @@ func (s *Scraper) scrape() {
 		h := s.history[key]
 		h.append(now, m)
 
-		// Token-weighted means of CO2/token (active periods only — zeros excluded by append).
-		// Weighting by throughput prevents low-throughput transition samples (just above the
-		// 5 tok/s threshold) from dominating the average. A sample at 5 tok/s with extreme
-		// CO2/token gets proportionally less weight than a sample at 3000 tok/s.
-		var weightedSum24, tokenSum24 float64
-		var weightedSum7d, tokenSum7d float64
-		cutoff24h := now.Add(-24 * time.Hour)
-		cutoff7d := now.Add(-7 * 24 * time.Hour)
-		for i, dp := range h.CO2MgPerToken {
-			tokens := h.TokensPerSec[i].V
-			if dp.T.After(cutoff7d) {
-				weightedSum7d += dp.V * tokens
-				tokenSum7d += tokens
+		// Token-weighted averages from hourly aggregate buckets.
+		// Each bucket stores Σ(co2/token × tok/s) and Σ(tok/s) for one hour,
+		// so the weighted mean = Σ weighted / Σ tokens across the window.
+		var wSum24, tSum24, wSum7d, tSum7d float64
+		cutoff24h := now.Add(-24 * time.Hour).Truncate(time.Hour).Unix()
+		cutoff7d := now.Add(-7 * 24 * time.Hour).Truncate(time.Hour).Unix()
+		for _, b := range h.AvgBuckets {
+			if b.Hour >= cutoff7d {
+				wSum7d += b.WeightedSum
+				tSum7d += b.TokenSum
 			}
-			if dp.T.After(cutoff24h) {
-				weightedSum24 += dp.V * tokens
-				tokenSum24 += tokens
+			if b.Hour >= cutoff24h {
+				wSum24 += b.WeightedSum
+				tSum24 += b.TokenSum
 			}
 		}
-		if tokenSum24 > 0 {
-			m.CO2MgPerTokenAvg24h = math.Round(weightedSum24/tokenSum24*1000) / 1000
+		if tSum24 > 0 {
+			m.CO2MgPerTokenAvg24h = math.Round(wSum24/tSum24*1000) / 1000
 		}
-		if tokenSum7d > 0 {
-			m.CO2MgPerTokenAvg7d = math.Round(weightedSum7d/tokenSum7d*1000) / 1000
+		if tSum7d > 0 {
+			m.CO2MgPerTokenAvg7d = math.Round(wSum7d/tSum7d*1000) / 1000
 		}
 	}
 }
