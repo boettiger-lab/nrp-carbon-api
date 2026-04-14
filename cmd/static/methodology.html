@@ -147,6 +147,13 @@ sum by (namespace, container, model_name) (
   (representing ~90,000 tokens). Models under sustained heavy load naturally converge to
   their true operating efficiency.
 </p>
+<p>
+  Internally, samples are aggregated into <strong>hourly buckets</strong> (168 buckets
+  for 7 days), each storing the weighted sum and token sum for that hour. On startup,
+  the scraper backfills these buckets from 7 days of historical Prometheus data, so
+  the 24-hour and 7-day averages are immediately correct after a service restart
+  rather than starting from zero.
+</p>
 
 <h2>Step 3 — Carbon Intensity by Grid Location</h2>
 <p>
