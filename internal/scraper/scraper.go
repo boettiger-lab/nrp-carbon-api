@@ -30,8 +30,8 @@ type ModelMetrics struct {
 	CarbonIntensity      float64 `json:"carbon_intensity_kg_per_kwh"`        // grid intensity used
 	CO2GramsPerHour      float64 `json:"co2_grams_per_hour"`
 	CO2MgPerToken        float64 `json:"co2_mg_per_token,omitempty"`          // 0 when idle (5-min window, ≥5 tok/s)
-	CO2MgPerTokenAvg24h  float64 `json:"co2_mg_per_token_avg_24h,omitempty"`  // running 24h mean, active periods only
-	CO2MgPerTokenAvg7d   float64 `json:"co2_mg_per_token_avg_7d,omitempty"`   // running 7-day mean, active periods only
+	CO2MgPerTokenAvg24h  float64 `json:"co2_mg_per_token_avg_24h,omitempty"`  // token-weighted 24h mean, active periods only
+	CO2MgPerTokenAvg7d   float64 `json:"co2_mg_per_token_avg_7d,omitempty"`   // token-weighted 7-day mean, active periods only
 
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -46,6 +46,7 @@ type modelHistory struct {
 	PowerWatts   []dataPoint
 	CO2GramsPerHour []dataPoint
 	CO2MgPerToken   []dataPoint
+	TokensPerSec    []dataPoint // aligned with CO2MgPerToken for weighted averaging
 }
 
 const maxHistory = 20160 // 7 days at 1-minute resolution (scrapeInterval=30s → 2 per min)
@@ -61,6 +62,7 @@ func (h *modelHistory) append(now time.Time, m *ModelMetrics) {
 	push(&h.CO2GramsPerHour, m.CO2GramsPerHour)
 	if m.CO2MgPerToken > 0 {
 		push(&h.CO2MgPerToken, m.CO2MgPerToken)
+		push(&h.TokensPerSec, m.TokensPerSec)
 	}
 }
 
@@ -224,26 +226,30 @@ func (s *Scraper) scrape() {
 		h := s.history[key]
 		h.append(now, m)
 
-		// Running means of CO2/token (active periods only — zeros excluded by append).
-		var sum24, sum7d float64
-		var cnt24, cnt7d int
+		// Token-weighted means of CO2/token (active periods only — zeros excluded by append).
+		// Weighting by throughput prevents low-throughput transition samples (just above the
+		// 5 tok/s threshold) from dominating the average. A sample at 5 tok/s with extreme
+		// CO2/token gets proportionally less weight than a sample at 3000 tok/s.
+		var weightedSum24, tokenSum24 float64
+		var weightedSum7d, tokenSum7d float64
 		cutoff24h := now.Add(-24 * time.Hour)
 		cutoff7d := now.Add(-7 * 24 * time.Hour)
-		for _, dp := range h.CO2MgPerToken {
+		for i, dp := range h.CO2MgPerToken {
+			tokens := h.TokensPerSec[i].V
 			if dp.T.After(cutoff7d) {
-				sum7d += dp.V
-				cnt7d++
+				weightedSum7d += dp.V * tokens
+				tokenSum7d += tokens
 			}
 			if dp.T.After(cutoff24h) {
-				sum24 += dp.V
-				cnt24++
+				weightedSum24 += dp.V * tokens
+				tokenSum24 += tokens
 			}
 		}
-		if cnt24 > 0 {
-			m.CO2MgPerTokenAvg24h = math.Round(sum24/float64(cnt24)*1000) / 1000
+		if tokenSum24 > 0 {
+			m.CO2MgPerTokenAvg24h = math.Round(weightedSum24/tokenSum24*1000) / 1000
 		}
-		if cnt7d > 0 {
-			m.CO2MgPerTokenAvg7d = math.Round(sum7d/float64(cnt7d)*1000) / 1000
+		if tokenSum7d > 0 {
+			m.CO2MgPerTokenAvg7d = math.Round(weightedSum7d/tokenSum7d*1000) / 1000
 		}
 	}
 }

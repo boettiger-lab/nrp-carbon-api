@@ -127,6 +127,27 @@ sum by (namespace, container, model_name) (
   for transparency.
 </p>
 
+<h3>Token-weighted averaging</h3>
+<p>
+  The 24-hour and 7-day CO₂/token averages shown in the bar chart use a
+  <strong>token-weighted mean</strong> rather than an unweighted arithmetic mean.
+  Because CO₂/token is a ratio (power ÷ throughput), samples taken during low-throughput
+  periods produce extreme values — a model drawing 2,000 W at 5 tok/s yields
+  110 mg/token, versus 0.03 mg at 3,000 tok/s. An unweighted mean gives equal
+  influence to both, inflating the average by orders of magnitude.
+</p>
+<p>
+  The weighted formula:
+</p>
+<pre><code>avg_CO₂/token = Σ(CO₂_per_token_i × tokens_per_sec_i) / Σ(tokens_per_sec_i)</code></pre>
+<p>
+  This is equivalent to computing total CO₂ emitted divided by total tokens produced,
+  which is the physically meaningful quantity. A 30-second sample at 5 tok/s
+  (representing ~150 tokens) contributes proportionally less than a sample at 3,000 tok/s
+  (representing ~90,000 tokens). Models under sustained heavy load naturally converge to
+  their true operating efficiency.
+</p>
+
 <h2>Step 3 — Carbon Intensity by Grid Location</h2>
 <p>
   NRP nodes are hosted at universities and research institutions across the United States
@@ -272,8 +293,13 @@ Ratio: 5,492 / 783 = 7.0× — NRP uses 7× less energy for the same tokens.</co
   The dashboard presents the frontier comparison in two ways:
 </p>
 <ul style="color:#cbd5e1; padding-left:1.5rem; margin:0.5rem 0 1rem;">
-  <li><strong>CO₂/token bar chart:</strong> Bars show the 24-hour average CO₂ per token
-  (mg) for each active NRP model. Green diamond (◆) markers show the current 5-minute rate.
+  <li><strong>CO₂/token bar chart:</strong> Bars show the <strong>token-weighted</strong>
+  24-hour average CO₂ per token (mg) for each active NRP model. Each 30-second sample is
+  weighted by its throughput (tok/s), so periods of high utilization contribute
+  proportionally more to the average than brief low-throughput transitions. This prevents
+  ramp-up/ramp-down periods (where CO₂/token is transiently extreme due to idle power
+  divided by few tokens) from dominating the long-run average. Green diamond (◆) markers
+  show the current 5-minute rate.
   Bar color ranges from <span style="color:#22c55e">green</span> (low carbon per token) to
   <span style="color:#ef4444">red</span> (high) — reflecting both energy efficiency and
   grid carbon intensity at the model's location.</li>
