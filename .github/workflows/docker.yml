@@ -30,4 +30,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/boettiger-lab/carbon-api:latest
+          tags: |
+            ghcr.io/boettiger-lab/carbon-api:latest
+            ghcr.io/boettiger-lab/carbon-api:${{ github.sha }}

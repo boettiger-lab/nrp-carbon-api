@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/boettiger-lab/carbon-api/internal/scraper"
@@ -40,10 +41,39 @@ func main() {
 	})
 
 	log.Printf("carbon-api listening on %s (prometheus=%s, interval=%s)", addr, promURL, interval)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// Timeouts so slow clients cannot hold connections open indefinitely.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
+
+// Ranges the timeseries endpoint serves, with the step each one uses. Each
+// request runs two range queries against NRP's shared Prometheus, so the
+// endpoint takes only the ranges the dashboard offers, and each answer is
+// cached for one step: a new point cannot exist before then.
+var timeSeriesRanges = map[string]struct{ rng, step time.Duration }{
+	"24h": {24 * time.Hour, 5 * time.Minute},
+	"7d":  {7 * 24 * time.Hour, time.Hour},
+	"30d": {30 * 24 * time.Hour, 6 * time.Hour},
+}
+
+type tsCacheEntry struct {
+	at   time.Time
+	body []byte
+}
+
+var (
+	tsMu    sync.Mutex // held across the fetch, so concurrent misses make one query
+	tsCache = map[string]tsCacheEntry{}
+)
 
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -66,38 +96,43 @@ func handleTimeSeries(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	rangeStr := r.URL.Query().Get("range")
-	rangeDur := parseDuration(rangeStr, 24*time.Hour)
-
-	// Choose step size to keep response ≤ ~500 points.
-	step := rangeDur / 400
-	if step < time.Minute {
-		step = time.Minute
+	key := r.URL.Query().Get("range")
+	if key == "" {
+		key = "24h"
 	}
-	// Round to clean intervals.
-	switch {
-	case rangeDur <= 25*time.Hour:
-		step = 5 * time.Minute
-	case rangeDur <= 8*24*time.Hour:
-		step = time.Hour
-	default:
-		step = 6 * time.Hour
+	spec, ok := timeSeriesRanges[key]
+	if !ok {
+		http.Error(w, "range must be one of 24h, 7d, 30d", http.StatusBadRequest)
+		return
 	}
 
-	pts, err := s.ClusterTimeSeries(rangeDur, step)
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
+	tsMu.Lock()
+	entry, hit := tsCache[key]
+	if !hit || time.Since(entry.at) >= spec.step {
+		pts, err := s.ClusterTimeSeries(spec.rng, spec.step)
+		errMsg := ""
+		if err != nil {
+			// Log the detail; callers get a generic message.
+			log.Printf("timeseries %s: %v", key, err)
+			errMsg = "upstream query failed"
+		}
+		body, _ := json.Marshal(map[string]interface{}{
+			"range":  spec.rng.String(),
+			"step":   spec.step.String(),
+			"points": pts,
+			"error":  errMsg,
+		})
+		entry = tsCacheEntry{at: time.Now(), body: body}
+		if err == nil {
+			tsCache[key] = entry
+		}
 	}
+	tsMu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"range":  rangeDur.String(),
-		"step":   step.String(),
-		"points": pts,
-		"error":  errMsg,
-	})
+	w.Write(entry.body)
+	w.Write([]byte("\n"))
 }
 
 // GET /api/v1/carbon
@@ -135,6 +170,10 @@ func handleSeries(w http.ResponseWriter, r *http.Request) {
 
 	rangeStr := r.URL.Query().Get("range")
 	rangeDur := parseDuration(rangeStr, 24*time.Hour)
+	// Served from memory, which holds at most 7 days; a longer range adds nothing.
+	if rangeDur <= 0 || rangeDur > 7*24*time.Hour {
+		rangeDur = 7 * 24 * time.Hour
+	}
 
 	series := s.Series(ns, container, metric, rangeDur)
 	w.Header().Set("Content-Type", "application/json")

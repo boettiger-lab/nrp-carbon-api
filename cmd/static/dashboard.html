@@ -172,6 +172,8 @@
 </footer>
 
 <script>
+// Escape text that comes from Prometheus labels before it goes into innerHTML.
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const API    = '/api/v1/carbon';
 const TS_API = '/api/v1/carbon/timeseries';
 let barChart  = null;
@@ -480,12 +482,12 @@ function render(data) {
     return `
     <div class="card ${ic}">
       <div class="card-header">
-        <div class="model-name ${m.model_name?'':'unknown'}">${m.model_name||m.container}</div>
+        <div class="model-name ${m.model_name?'':'unknown'}">${esc(m.model_name||m.container)}</div>
         <span class="badge ${active?'badge-active':'badge-idle'}">${active?'active':'idle'}</span>
       </div>
       <div class="card-meta">
-        <span>${m.gpu_count}× ${m.gpu_hardware||'—'}</span>
-        <span>${institution}</span>${promptPct != null ? `<span>${fmt(promptPct,0)}% input tokens</span>` : ''}
+        <span>${esc(m.gpu_count)}× ${esc(m.gpu_hardware||'—')}</span>
+        <span>${esc(institution)}</span>${promptPct != null ? `<span>${fmt(promptPct,0)}% input tokens</span>` : ''}
       </div>
       <div class="metrics">
         <div class="metric"><div class="metric-label">CO₂ / hr</div><div class="metric-value ${cc}">${fmt(m.co2_grams_per_hour)}</div><div class="metric-unit">grams</div></div>
