@@ -18,7 +18,7 @@ spec:
         runAsUser: 1000
       containers:
         - name: carbon-api
-          image: ghcr.io/boettiger-lab/carbon-api:latest
+          image: ghcr.io/boettiger-lab/carbon-api:2569b1615d7297dd05a9da4b036428550cd460fb
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
