@@ -1,0 +1,34 @@
+# carbon-api's only outbound need is NRP's public Prometheus over HTTPS (and DNS
+# to find it). It holds no secrets, but it shares `biodiversity` with other
+# services, so a compromised pod should not be able to reach them.
+# Ingress is not restricted here: the public ingress controller reaches it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: carbon-api-egress
+  namespace: biodiversity
+spec:
+  podSelector:
+    matchLabels:
+      app: carbon-api
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+        - ipBlock:
+            cidr: ::/0
+            except: [fc00::/7, fe80::/10, ::1/128]
+      ports:
+        - {port: 443, protocol: TCP}
